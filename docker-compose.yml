@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  db:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: evergreen
+      MYSQL_USER: user
+      MYSQL_PASSWORD: rootpassword
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./Dump20250727.sql:/docker-entrypoint-initdb.d/init.sql
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - DB_USER=user
+      - DB_PASSWORD=rootpassword
+      - DB_NAME=evergreen
+      - SECRET_KEY=a_very_secret_key_that_should_be_in_env_vars

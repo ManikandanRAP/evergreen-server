@@ -1,0 +1,9 @@
+pydantic
+pymysql
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+passlib[bcrypt]
+requests
+python-multipart
+pydantic[email]
