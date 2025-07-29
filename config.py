@@ -11,6 +11,7 @@ DB_HOST = config.get('database', 'host')
 DB_USER = config.get('database', 'user')
 DB_PASSWORD = config.get('database', 'password')
 DB_NAME = config.get('database', 'name')
+DB_PORT = config.getint('database', 'db_port')
 
 # --- JWT Settings ---
 SECRET_KEY = config.get('jwt', 'secret_key')

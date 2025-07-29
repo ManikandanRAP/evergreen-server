@@ -22,7 +22,7 @@ def create_admin_user():
         # )
         conn = pymysql.connect(
         host="localhost",
-        port=3306,
+        port=3307,
         user="root",
         password="rootpassword",
         db="evergreen",

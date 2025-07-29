@@ -2,30 +2,41 @@ version: '3.8'
 services:
   db:
     image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password
-    restart: always
+    container_name: evergreen-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: evergreen
-      MYSQL_USER: user
-      MYSQL_PASSWORD: rootpassword
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=evergreen
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=rootpassword
     ports:
-      - "3306:3306"
+      - "3306:3306"  # External access on port 3307
     volumes:
-      # The MySQL data will be stored in a 'db_data' directory outside the project folder.
       - ../db_data:/var/lib/mysql
-      - ./Dump20250727.sql:/docker-entrypoint-initdb.d/init.sql
-  app:
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
+  backend:
     build: .
+    container_name: evergreen-server-backend
     ports:
       - "8000:8000"
-    depends_on:
-      - db
     environment:
       - DB_HOST=db
       - DB_USER=user
       - DB_PASSWORD=rootpassword
       - DB_NAME=evergreen
+      - DB_PORT=3306
       - SECRET_KEY=a_very_secret_key_that_should_be_in_env_vars
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    # Add these for debugging
+    stdin_open: true
+    tty: true
+
+networks:
+  evergreen_net:
+    driver: bridge
 
 

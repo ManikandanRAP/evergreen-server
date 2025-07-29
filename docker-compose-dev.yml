@@ -26,6 +26,7 @@ services:
       - DB_USER=user
       - DB_PASSWORD=rootpassword
       - DB_NAME=evergreen
+      - DB_PORT=3306
       - SECRET_KEY=a_very_secret_key_that_should_be_in_env_vars
 
 
