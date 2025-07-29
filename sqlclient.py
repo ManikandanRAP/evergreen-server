@@ -1,17 +1,13 @@
 import pymysql
-import os
 import json
 from auth import get_password_hash
 from contextlib import contextmanager
 from pydantic import BaseModel
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
+from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
 
-# --- Configuration ---
-DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
-DB_USER = os.environ.get("DB_USER", "root")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "rootpassword")
-DB_NAME = os.environ.get("DB_NAME", "evergreen")
+# --- Configuration is now managed by config.py ---
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     print("Validation error:", exc.errors())

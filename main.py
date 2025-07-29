@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from typing import Optional
 from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate
 from sqlclient import SqlClient
-from auth import create_access_token, verify_password, SECRET_KEY, ALGORITHM, get_password_hash
+from auth import create_access_token, verify_password, get_password_hash
+from config import SECRET_KEY, ALGORITHM
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 import uuid

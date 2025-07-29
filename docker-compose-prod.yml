@@ -13,7 +13,7 @@ services:
       - "3307:3306"
     volumes:
       # The MySQL data will be stored in a 'db_data' directory outside the project folder.
-      - ../db_data:/var/lib/mysql
+      - /home/db_data:/var/lib/mysql
       - ./Dump20250727.sql:/docker-entrypoint-initdb.d/init.sql
   app:
     build: .
