@@ -119,6 +119,7 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
     user, _ = client.get_user_by_email(email=form_data.username)
+    print("user", user, form_data.username, form_data.password, verify_password(form_data.password, user.get('password_hash')))
     if not user or not verify_password(form_data.password, user.get('password_hash')):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

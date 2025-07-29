@@ -7,7 +7,7 @@ DB_HOST = "localhost"  # Use localhost when running script from the host
 DB_USER = "root"
 DB_PASSWORD = "rootpassword"
 DB_NAME = "evergreen"
-DB_PORT = 3307
+DB_PORT = 3306
 SQL_DUMP_FILE = os.path.join(os.path.dirname(__file__), 'Dump20250719.sql')
 
 def execute_sql_from_file(cursor, filepath):
