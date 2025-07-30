@@ -159,8 +159,8 @@ class ShowCreate(BaseModel):
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
-    isUndersized:Optional[int] = None
-    isActive:Optional[int] = None
+    is_undersized: Optional[bool] = Field(default=None, alias='isUndersized')
+    is_active: Optional[bool] = Field(default=None, alias='isActive')
 
 class Show(BaseModel):
     id: str
@@ -185,7 +185,7 @@ class Show(BaseModel):
     latest_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
-    start_date: Optional[date] = None
+    start_date: Optional[date] = None       
     show_name_in_qbo: Optional[str] = None
     side_bonus_percent: Optional[float] = None
     youtube_ads_percent: Optional[float] = None
@@ -212,8 +212,8 @@ class Show(BaseModel):
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
-    isUndersized:Optional[int] = None
-    isActive:Optional[int] = None
+    is_undersized: Optional[bool] = Field(None, alias='isUndersized')
+    is_active: Optional[bool] = Field(None, alias='isActive')
 
 
 class Subnetwork(BaseModel):
@@ -274,6 +274,8 @@ class ShowUpdate(BaseModel):
     show_primary_contact: Optional[str] = None
     ageDemographic:Optional[str] = None
     gender:Optional[str] = None
+    is_undersized: Optional[bool] = Field(None, alias='isUndersized')
+    is_active: Optional[bool] = Field(None, alias='isActive')
 
 
 class PartnerCreate(BaseModel):

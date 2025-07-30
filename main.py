@@ -140,6 +140,7 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
 
 @app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
+    print("created podcast---",show_data)
     client = SqlClient()
     print("created podcast---",show_data)
     new_show, error = client.create_podcast(show_data)

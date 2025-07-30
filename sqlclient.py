@@ -212,7 +212,7 @@ class SqlClient:
     def create_podcast(self, show_data):
         try:
             show_id = os.urandom(16).hex()
-            show_dict = show_data.dict()
+            show_dict = show_data.dict(by_alias=True)
             show_dict['id'] = show_id
             show_dict.pop("annual_usd", None)
             
@@ -249,6 +249,7 @@ class SqlClient:
             # Fetch the created show
             fetch_sql = "SELECT * FROM shows WHERE id = %s"
             new_show, _, fetch_error = self._execute_query(fetch_sql, (show_id,), fetch='one')
+            
             
             if fetch_error:
                 if isinstance(fetch_error, (DatabaseConnectionError, DatabaseCredentialsError)):
