@@ -115,7 +115,7 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     }
 
 
-@app.post("/login", response_model=Token)
+@app.post("/login")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
     print("user sdcdfc", form_data.username, form_data.password)

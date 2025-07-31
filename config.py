@@ -16,5 +16,6 @@ DB_PORT = config.getint('database', 'db_port')
 # --- JWT Settings ---
 SECRET_KEY = config.get('jwt', 'secret_key')
 ALGORITHM = config.get('jwt', 'algorithm')
+ACCESS_TOKEN_EXPIRE_MINUTES = config.getint('jwt', 'access_token_expire_minutes')
 ACCESS_TOKEN_EXPIRE_HOURS = config.getint('jwt', 'access_token_expire_hours')
 REFRESH_TOKEN_EXPIRE_DAYS = config.getint('jwt', 'refresh_token_expire_days')
