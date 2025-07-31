@@ -159,8 +159,8 @@ class ShowCreate(BaseModel):
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
-    is_undersized: Optional[bool] = Field(default=None, alias='isUndersized')
-    is_active: Optional[bool] = Field(default=None, alias='isActive')
+    isUndersized: Optional[bool] = None
+    isActive: Optional[bool] = None
 
 class Show(BaseModel):
     id: str
@@ -212,8 +212,8 @@ class Show(BaseModel):
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
-    is_undersized: Optional[bool] = Field(None, alias='isUndersized')
-    is_active: Optional[bool] = Field(None, alias='isActive')
+    isUndersized: Optional[bool] = None
+    isActive: Optional[bool] = None
 
 
 class Subnetwork(BaseModel):
@@ -274,8 +274,12 @@ class ShowUpdate(BaseModel):
     show_primary_contact: Optional[str] = None
     ageDemographic:Optional[str] = None
     gender:Optional[str] = None
-    is_undersized: Optional[bool] = Field(None, alias='isUndersized')
-    is_active: Optional[bool] = Field(None, alias='isActive')
+    isUndersized: Optional[bool] = None
+    isActive: Optional[bool] = None
+    primary_education: Optional[str] = None
+    secondary_education: Optional[str] = None
+    region: Optional[str] = None
+    ageDemographic: Optional[str] = None
 
 
 class PartnerCreate(BaseModel):

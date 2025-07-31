@@ -147,17 +147,25 @@ class SqlClient:
             return []
         
         for show in shows:
-            if 'annual_usd' in show and isinstance(show['annual_usd'], str):
+            annual_usd_raw = show.get('annual_usd')
+            
+            if isinstance(annual_usd_raw, str):
                 try:
-                    show['annual_usd'] = json.loads(show['annual_usd'])
+                    annual_usd = json.loads(annual_usd_raw)
                 except json.JSONDecodeError:
-                    show['annual_usd'] = {}
-                annual_usd = show.get('annual_usd', {})
-                show['revenue_2023'] = annual_usd.get('2023', 0)
-                show['revenue_2024'] = annual_usd.get('2024', 0)
-                show['revenue_2025'] = annual_usd.get('2025', 0)
-        
+                    annual_usd = {}
+            elif isinstance(annual_usd_raw, dict):
+                annual_usd = annual_usd_raw
+            else:
+                annual_usd = {}
+
+            show['annual_usd'] = annual_usd
+            show['revenue_2023'] = annual_usd.get('2023', 0)
+            show['revenue_2024'] = annual_usd.get('2024', 0)
+            show['revenue_2025'] = annual_usd.get('2025', 0)
+
         return shows
+
 
     def get_podcast_by_id(self, show_id: str):
         sql = "SELECT * FROM shows WHERE id = %s"
@@ -226,14 +234,20 @@ class SqlClient:
             show_dict["genre_name"] = show_dict.pop("genre_name")
             show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             
-            annual_usd_data = {
-                "2023": str(show_dict.pop("revenue_2023", None)),
-                "2024": str(show_dict.pop("revenue_2024", None)),
-                "2025": str(show_dict.pop("revenue_2025", None)),
-            }
+            # annual_usd_data = {
+            #     "2023": str(show_dict.pop("revenue_2023", None)),
+            #     "2024": str(show_dict.pop("revenue_2024", None)),
+            #     "2025": str(show_dict.pop("revenue_2025", None)),
+            # }
 
-            if any(value is not None for value in annual_usd_data.values()):
-                show_dict["annual_usd"] = json.dumps(annual_usd_data)
+            # if any(value is not None for value in annual_usd_data.values()):
+            #     show_dict["annual_usd"] = json.dumps(annual_usd_data)
+            annual_usd_data = {
+                "2023": str(show_dict.pop("revenue_2023", 0) or 0),
+                "2024": str(show_dict.pop("revenue_2024", 0) or 0),
+                "2025": str(show_dict.pop("revenue_2025", 0) or 0),
+            }
+            show_dict["annual_usd"] = json.dumps(annual_usd_data)
 
             columns = ', '.join([f'`{k}`' for k in show_dict.keys()])
             placeholders = ', '.join(['%s'] * len(show_dict))
@@ -262,12 +276,17 @@ class SqlClient:
                     new_show['annual_usd'] = json.loads(new_show['annual_usd'])
                 except json.JSONDecodeError:
                     new_show['annual_usd'] = {}
-            annual_usd = new_show.get('annual_usd', {})
+
+            annual_usd = new_show.get('annual_usd') or {}
+            if not isinstance(annual_usd, dict):
+                annual_usd = {}
+
             new_show['revenue_2023'] = annual_usd.get('2023', 0)
             new_show['revenue_2024'] = annual_usd.get('2024', 0)
             new_show['revenue_2025'] = annual_usd.get('2025', 0)
-            
+
             return new_show, None
+
             
         except (DatabaseConnectionError, DatabaseCredentialsError):
             raise
@@ -277,6 +296,7 @@ class SqlClient:
 
     def update_podcast(self, show_id: str, show_data: BaseModel):
         try:
+            print(show_data)
             if not show_data.model_fields_set:
                 return None, "No update data provided"
 
@@ -291,12 +311,17 @@ class SqlClient:
 
             # Handle revenue fields
             annual_usd_data = {}
-            for year, field in [("2023", "revenue_2023"), ("2024", "revenue_2024"), ("2025", "revenue_2025")]:
-                if field in show_dict:
-                    annual_usd_data[year] = str(show_dict.pop(field))
+            # for year, field in [("2023", "revenue_2023"), ("2024", "revenue_2024"), ("2025", "revenue_2025")]:
+            #     if field in show_dict:
+            #         annual_usd_data[year] = str(show_dict.pop(field))
 
-            if annual_usd_data:
-                show_dict["annual_usd"] = json.dumps(annual_usd_data)
+            # if annual_usd_data:
+            #     show_dict["annual_usd"] = json.dumps(annual_usd_data)
+            annual_usd_data = {}
+            for year, field in [("2023", "revenue_2023"), ("2024", "revenue_2024"), ("2025", "revenue_2025")]:
+                annual_usd_data[year] = str(show_dict.pop(field, 0) or 0)
+
+            show_dict["annual_usd"] = json.dumps(annual_usd_data)
 
             # Build and execute update query
             set_clause = ", ".join([f"{key} = %s" for key in show_dict.keys()])
