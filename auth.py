@@ -1,11 +1,9 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-
-# --- Configuration is now managed by config.py ---
+from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_HOURS, REFRESH_TOKEN_EXPIRE_DAYS
 
 # Password Hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -16,13 +14,23 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-# JWT Token Creation
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+# Internal token creation helper
+def _create_token(data: dict, expires_delta: timedelta) -> str:
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.utcnow() + expires_delta
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# Create both access and refresh tokens
+def create_token_pair(data: dict) -> Tuple[str, str]:
+    access_token = _create_token(data, timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
+    refresh_token = _create_token(data, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    return access_token, refresh_token
+
+# Decode and validate a token (access or refresh)
+def decode_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
