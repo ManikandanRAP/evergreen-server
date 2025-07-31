@@ -12,7 +12,7 @@ services:
       - "3306:3306"  # External access on port 3307
     volumes:
       # The MySQL data will be stored in a 'db_data' directory outside the project folder.
-      - /home/db_data:/var/lib/mysql
+      - ../db_data:/var/lib/mysql
     networks:
       - evergreen_net
     restart: unless-stopped
