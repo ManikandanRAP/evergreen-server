@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -9,7 +9,6 @@ from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
 from config import SECRET_KEY, ALGORITHM
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import APIRouter
 import uuid
 from datetime import datetime, timezone
 
@@ -20,6 +19,9 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# --- NEW: Create an APIRouter ---
+router = APIRouter()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# IMPORTANT: Update tokenUrl to include /api
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login") 
 
 # --- Authentication & Authorization ---
 
@@ -61,8 +64,9 @@ async def get_admin_user(current_user: User = Depends(get_current_active_user)):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
-# --- API Endpoints ---
-@app.post("/create_users", response_model=UserResponse)
+# --- API Endpoints (Now using @router) ---
+
+@router.post("/create_users", response_model=UserResponse)
 def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     existing_user, _ = client.get_user_by_email(user_data.email)
@@ -86,7 +90,7 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
         "role": user_data.role, "mapped_partner_id": user_data.mapped_partner_id,
     }
 
-@app.post("/login")
+@router.post("/login")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
     user, _ = client.get_user_by_email(email=form_data.username)
@@ -99,13 +103,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(data={"sub": user.get('email')})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/users/me", response_model=User)
+@router.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
     return current_user
 
-# --- Admin Endpoints ---
-
-@app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
+@router.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     new_show, error = client.create_podcast(show_data)
@@ -113,8 +115,7 @@ def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user))
         raise HTTPException(status_code=400, detail=str(error))
     return new_show
 
-# --- NEW BULK IMPORT ENDPOINT ---
-@app.post("/podcasts/bulk-import", status_code=status.HTTP_200_OK)
+@router.post("/podcasts/bulk-import", status_code=status.HTTP_200_OK)
 def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get_admin_user)):
     client = SqlClient()
     successful_imports = 0
@@ -139,9 +140,8 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
         "failed": failed_imports,
         "errors": errors
     }
-# --- END NEW ENDPOINT ---
 
-@app.get("/podcasts", response_model=list[Show])
+@router.get("/podcasts", response_model=list[Show])
 def get_all_podcasts(admin: User = Depends(get_admin_user)):
     client = SqlClient()
     return client.get_all_podcasts()
@@ -168,7 +168,7 @@ class ShowFilterParams:
         self.has_web_mgmt_revenue = has_web_mgmt_revenue
         self.is_original = is_original
 
-@app.get("/podcasts/filter", response_model=list[Show])
+@router.get("/podcasts/filter", response_model=list[Show])
 def filter_podcasts(filters: ShowFilterParams = Depends(), admin: User = Depends(get_admin_user)):
     client = SqlClient()
     filter_dict = {k: v for k, v in vars(filters).items() if v is not None}
@@ -177,7 +177,7 @@ def filter_podcasts(filters: ShowFilterParams = Depends(), admin: User = Depends
         raise HTTPException(status_code=400, detail=str(error))
     return podcasts
 
-@app.get("/podcasts/{show_id}", response_model=Show)
+@router.get("/podcasts/{show_id}", response_model=Show)
 def get_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     show, error = client.get_podcast_by_id(show_id)
@@ -185,7 +185,7 @@ def get_podcast(show_id: str, admin: User = Depends(get_admin_user)):
         raise HTTPException(status_code=404, detail="Podcast not found")
     return show
 
-@app.put("/podcasts/{show_id}", response_model=Show)
+@router.put("/podcasts/{show_id}", response_model=Show)
 def update_podcast(show_id: str, show_data: ShowUpdate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     updated_show, error = client.update_podcast(show_id, show_data)
@@ -195,14 +195,14 @@ def update_podcast(show_id: str, show_data: ShowUpdate, admin: User = Depends(ge
         raise HTTPException(status_code=404, detail=error)
     return updated_show
 
-@app.delete("/podcasts/{show_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/podcasts/{show_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     success, error = client.delete_podcast(show_id)
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
-@app.post("/partners", response_model=User, status_code=status.HTTP_201_CREATED)
+@router.post("/partners", response_model=User, status_code=status.HTTP_201_CREATED)
 def create_partner(partner_data: PartnerCreate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     new_user, error = client.create_partner(partner_data)
@@ -210,14 +210,14 @@ def create_partner(partner_data: PartnerCreate, admin: User = Depends(get_admin_
         raise HTTPException(status_code=409, detail=error)
     return new_user
 
-@app.put("/partners/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/partners/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
 def update_partner_password(user_id: str, password_data: PasswordUpdate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     success, error = client.update_password(user_id, password_data.password)
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
-@app.post("/podcasts/{show_id}/partners/{partner_id}", status_code=status.HTTP_201_CREATED)
+@router.post("/podcasts/{show_id}/partners/{partner_id}", status_code=status.HTTP_201_CREATED)
 def associate_partner_with_show(show_id: str, partner_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     result, error = client.associate_partner_with_show(show_id, partner_id)
@@ -225,23 +225,21 @@ def associate_partner_with_show(show_id: str, partner_id: str, admin: User = Dep
         raise HTTPException(status_code=404, detail=error)
     return result
 
-@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(user_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     success, error = client.delete_user(user_id)
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
-@app.delete("/podcasts/{show_id}/partners/{partner_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/podcasts/{show_id}/partners/{partner_id}", status_code=status.HTTP_204_NO_CONTENT)
 def unassociate_partner_from_show(show_id: str, partner_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     success, error = client.unassociate_partner_from_show(show_id, partner_id)
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
-# --- Partner & Admin Endpoints ---
-
-@app.get("/partners/me/podcasts", response_model=list[Show])
+@router.get("/partners/me/podcasts", response_model=list[Show])
 def get_my_podcasts(current_user: User = Depends(get_current_active_user)):
     client = SqlClient()
     partner_id = current_user.get('id')
@@ -250,13 +248,16 @@ def get_my_podcasts(current_user: User = Depends(get_current_active_user)):
         raise HTTPException(status_code=500, detail=str(error))
     return podcasts
 
-@app.get("/partners/{partner_id}/podcasts", response_model=list[Show])
+@router.get("/partners/{partner_id}/podcasts", response_model=list[Show])
 def get_podcasts_for_partner(partner_id: str, admin: User = Depends(get_admin_user)):
     client = SqlClient()
     podcasts, error = client.get_podcasts_for_partner(partner_id)
     if error:
         raise HTTPException(status_code=500, detail=str(error))
     return podcasts
+
+# --- NEW: Include the router in the main app with a prefix ---
+app.include_router(router, prefix="/api")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
