@@ -219,6 +219,18 @@ class SqlClient:
 
     def create_podcast(self, show_data):
         try:
+            # Check for duplicate title before proceeding
+            check_sql = "SELECT id FROM shows WHERE title = %s"
+            existing_show, _, check_error = self._execute_query(check_sql, (show_data.title,), fetch='one')
+
+            if check_error:
+                if isinstance(check_error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                    raise check_error
+                return None, f"Database error while checking for existing show: {str(check_error)}"
+
+            if existing_show:
+                return None, f"A show with the title '{show_data.title}' already exists."
+
             show_id = os.urandom(16).hex()
             show_dict = show_data.dict(by_alias=True)
             show_dict['id'] = show_id
@@ -234,14 +246,6 @@ class SqlClient:
             show_dict["genre_name"] = show_dict.pop("genre_name")
             show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             
-            # annual_usd_data = {
-            #     "2023": str(show_dict.pop("revenue_2023", None)),
-            #     "2024": str(show_dict.pop("revenue_2024", None)),
-            #     "2025": str(show_dict.pop("revenue_2025", None)),
-            # }
-
-            # if any(value is not None for value in annual_usd_data.values()):
-            #     show_dict["annual_usd"] = json.dumps(annual_usd_data)
             annual_usd_data = {
                 "2023": str(show_dict.pop("revenue_2023", 0) or 0),
                 "2024": str(show_dict.pop("revenue_2024", 0) or 0),
@@ -311,12 +315,6 @@ class SqlClient:
 
             # Handle revenue fields
             annual_usd_data = {}
-            # for year, field in [("2023", "revenue_2023"), ("2024", "revenue_2024"), ("2025", "revenue_2025")]:
-            #     if field in show_dict:
-            #         annual_usd_data[year] = str(show_dict.pop(field))
-
-            # if annual_usd_data:
-            #     show_dict["annual_usd"] = json.dumps(annual_usd_data)
             annual_usd_data = {}
             for year, field in [("2023", "revenue_2023"), ("2024", "revenue_2024"), ("2025", "revenue_2025")]:
                 annual_usd_data[year] = str(show_dict.pop(field, 0) or 0)

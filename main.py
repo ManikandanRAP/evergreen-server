@@ -118,19 +118,25 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
     failed_imports = 0
     errors = []
     for i, show_data in enumerate(shows_data):
+        # Skip rows where title is not provided or empty
+        if not show_data.title or not show_data.title.strip():
+            failed_imports += 1
+            errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
+            continue
+        
         new_show, error = client.create_podcast(show_data)
         if error:
             failed_imports += 1
             errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
         else:
             successful_imports += 1
+    
+    message = "Bulk import process completed."
     if failed_imports > 0 and successful_imports == 0:
-         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": "All imports failed.", "errors": errors}
-        )
+        message = "All show imports failed. Please check the errors below."
+
     return {
-        "message": "Bulk import process completed.",
+        "message": message,
         "total": len(shows_data),
         "successful": successful_imports,
         "failed": failed_imports,
