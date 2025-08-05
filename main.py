@@ -27,7 +27,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# This should NOT have the /api prefix, because Nginx is removing it.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # --- Authentication & Authorization ---
@@ -59,10 +58,10 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 async def get_admin_user(current_user: User = Depends(get_current_active_user)):
     if current_user.get('role') != 'admin':
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    return current.user
+    # --- THIS LINE IS NOW CORRECTED ---
+    return current_user
 
-# --- API Endpoints (Defined directly on the app) ---
-
+# --- API Endpoints ---
 @app.post("/create_users", response_model=UserResponse)
 def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
