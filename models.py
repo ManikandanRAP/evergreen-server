@@ -111,7 +111,10 @@ class ShowPartner(BaseModel):
     partner_id: Optional[str] = None
 
 class ShowCreate(BaseModel):
+    # Required field
     title: str
+
+    # Optional fields with defaults
     minimum_guarantee: Optional[float] = None
     annual_usd: Optional[dict[str, float]] = None
     subnetwork_id: Optional[str] = None
@@ -120,14 +123,14 @@ class ShowCreate(BaseModel):
     relationship_level: Optional[RelationshipLevel] = None
     show_type: Optional[ShowType] = None
     evergreen_ownership_pct: Optional[float] = None
-    has_sponsorship_revenue: Optional[bool] = None
-    has_non_evergreen_revenue: Optional[bool] = None
-    requires_partner_access: Optional[bool] = None
-    has_branded_revenue: Optional[bool] = None
-    has_marketing_revenue: Optional[bool] = None
-    has_web_mgmt_revenue: Optional[bool] = None
+    has_sponsorship_revenue: Optional[bool] = False
+    has_non_evergreen_revenue: Optional[bool] = False
+    requires_partner_access: Optional[bool] = False
+    has_branded_revenue: Optional[bool] = False
+    has_marketing_revenue: Optional[bool] = False
+    has_web_mgmt_revenue: Optional[bool] = False
     genre_name: Optional[str] = None
-    is_original: Optional[bool] = None
+    is_original: Optional[bool] = False
     shows_per_year: Optional[int] = None
     latest_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
@@ -154,13 +157,13 @@ class ShowCreate(BaseModel):
     evergreen_production_staff_name: Optional[str] = None
     show_host_contact: Optional[str] = None
     show_primary_contact: Optional[str] = None
-    ageDemographic:Optional[str] = None
-    gender:Optional[str] = None
-    region:Optional[str] = None
-    primary_education:Optional[str] = None
-    secondary_education:Optional[str] = None
-    isUndersized: Optional[bool] = None
-    isActive: Optional[bool] = None
+    ageDemographic: Optional[str] = None
+    gender: Optional[str] = None
+    region: Optional[str] = None
+    primary_education: Optional[str] = None
+    secondary_education: Optional[str] = None
+    isUndersized: Optional[bool] = False
+    isActive: Optional[bool] = True
 
 class Show(BaseModel):
     id: str

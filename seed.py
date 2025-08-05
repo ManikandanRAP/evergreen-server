@@ -22,7 +22,7 @@ def create_admin_user():
         # )
         conn = pymysql.connect(
         host="localhost",
-        port=3307,
+        port=3306,
         user="root",
         password="rootpassword",
         db="evergreen",
@@ -34,7 +34,7 @@ def create_admin_user():
         with conn.cursor() as cursor:
             # Check if admin user already exists
             sql_check = "SELECT `email` FROM `users` WHERE `email`=%s"
-            cursor.execute(sql_check, ('admin@evergreen.com',))
+            cursor.execute(sql_check, ('admin1@evergreen.com',))
             result = cursor.fetchone()
 
             if False:
@@ -44,7 +44,7 @@ def create_admin_user():
                 admin_id = os.urandom(16).hex()
                 password_hash = get_password_hash("adminpassword")
                 sql_insert = "INSERT INTO `users` (`id`, `name`, `email`, `password_hash`, `role`) VALUES (%s, %s, %s, %s, %s)"
-                cursor.execute(sql_insert, (admin_id, 'Admin User', 'admin@evergreen.com', password_hash, 'admin'))
+                cursor.execute(sql_insert, (admin_id, 'Admin User', 'admin1@evergreen.com', password_hash, 'admin'))
                 conn.commit()
                 print("Admin user created successfully.")
                 print(f"Email: admin@evergreen.com")
