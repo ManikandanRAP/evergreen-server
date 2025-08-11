@@ -9,14 +9,14 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: constr(min_length=6)
     role: str  
-    mapped_partner_id: Optional[int] = None
+    mapped_vendor_qbo_id: Optional[int] = None
 
 class UserResponse(BaseModel):
     id: str
     name: Optional[str]
     email: EmailStr
     role: str
-    mapped_partner_id: Optional[int]
+    mapped_vendor_qbo_id: Optional[int]
 
     class Config:
         orm_mode = True

@@ -71,20 +71,26 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     user_id = str(uuid.uuid4())
     hashed_password = get_password_hash(user_data.password)
     sql = """
-    INSERT INTO users (id, name, email, password_hash, role, created_at, mapped_partner_id)
+    INSERT INTO users (id, name, email, password_hash, role, created_at, mapped_vendor_qbo_id)
     VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
     values = (
         user_id, user_data.name, user_data.email, hashed_password,
-        user_data.role, datetime.now(timezone.utc), user_data.mapped_partner_id,
+        user_data.role, datetime.now(timezone.utc), user_data.mapped_vendor_qbo_id,
     )
     _, _, error = client._execute_query(sql, values, is_transaction=True)
     if error:
         raise HTTPException(status_code=500, detail="Error inserting user into DB")
     return {
         "id": user_id, "name": user_data.name, "email": user_data.email,
-        "role": user_data.role, "mapped_partner_id": user_data.mapped_partner_id,
+        "role": user_data.role, "mapped_vendor_qbo_id": user_data.mapped_vendor_qbo_id,
     }
+
+@app.get("/vendors")
+def get_vendors(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    vendors = client.get_all_vendors()
+    return vendors
 
 @app.post("/login")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):

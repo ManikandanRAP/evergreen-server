@@ -376,6 +376,16 @@ class SqlClient:
         except (DatabaseConnectionError, DatabaseCredentialsError):
             raise
 
+    def get_all_vendors(self):
+        """Fetches all unique vendors from the split_history table."""
+        sql = "SELECT DISTINCT vendor_name, vendor_qbo_id FROM split_history WHERE vendor_name IS NOT NULL AND vendor_qbo_id IS NOT NULL"
+        vendors, _, error = self._execute_query(sql, fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return []
+        return vendors
+
     # Add other methods with similar error handling...
     def get_all_users(self):
         sql = "SELECT * FROM users"
