@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from typing import Optional, List
-from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate
+from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate, Split, SplitCreate
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
 from config import SECRET_KEY, ALGORITHM
@@ -263,6 +263,41 @@ def get_podcasts_for_partner(partner_id: str, admin: User = Depends(get_admin_us
     if error:
         raise HTTPException(status_code=500, detail=str(error))
     return podcasts
+
+# --- Split Management Endpoints ---
+
+@app.get("/split-management/shows")
+def get_split_shows(current_user: User = Depends(get_current_active_user)):
+    client = SqlClient()
+    shows, error = client.get_split_shows_for_user(current_user)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return shows
+
+@app.get("/split-management/vendors/{show_qbo_id}")
+def get_split_vendors(show_qbo_id: int, current_user: User = Depends(get_current_active_user)):
+    client = SqlClient()
+    vendors, error = client.get_split_vendors_for_show(show_qbo_id)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return vendors
+
+@app.get("/split-management/splits")
+def get_splits_for_show_vendor(show_qbo_id: int, vendor_qbo_id: int, current_user: User = Depends(get_current_active_user)):
+    client = SqlClient()
+    splits, error = client.get_splits(show_qbo_id, vendor_qbo_id)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return splits
+
+@app.post("/split-management/splits", response_model=Split, status_code=status.HTTP_201_CREATED)
+def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    new_split, error = client.create_split(split_data)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return new_split
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

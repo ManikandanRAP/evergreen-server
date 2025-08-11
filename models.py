@@ -21,6 +21,25 @@ class UserResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class SplitCreate(BaseModel):
+    show_qbo_id: int
+    vendor_qbo_id: int
+    show_name: str
+    vendor_name: str
+    evergreen_pct_ads: float
+    evergreen_pct_programmatic: float
+    effective_date: date
+
+class Split(BaseModel):
+    split_id: int
+    show_qbo_id: int
+    show_name: str
+    vendor_qbo_id: int
+    vendor_name: str
+    evergreen_pct_ads: float
+    evergreen_pct_programmatic: float
+    effective_date: date
+
 class Region(str, Enum):
     urban = 'urban'
     rural = 'rural'

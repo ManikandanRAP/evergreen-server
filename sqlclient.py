@@ -410,3 +410,83 @@ class SqlClient:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
                 raise error
         return user, error
+
+    def get_split_shows_for_user(self, user: dict):
+        """Fetches unique shows from split_history based on user role."""
+        if user.get('role') == 'admin':
+            sql = "SELECT DISTINCT show_name, show_qbo_id FROM split_history WHERE show_name IS NOT NULL AND show_qbo_id IS NOT NULL"
+            params = None
+        elif user.get('role') == 'partner' and user.get('mapped_vendor_qbo_id'):
+            sql = "SELECT DISTINCT show_name, show_qbo_id FROM split_history WHERE vendor_qbo_id = %s AND show_name IS NOT NULL AND show_qbo_id IS NOT NULL"
+            params = (user['mapped_vendor_qbo_id'],)
+        else:
+            return [], None  # No data for partners without a mapped vendor or other roles
+
+        shows, _, error = self._execute_query(sql, params, fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return [], str(error)
+        return shows, None
+
+    def get_split_vendors_for_show(self, show_qbo_id: int):
+        """Fetches unique vendors for a given show from split_history."""
+        sql = "SELECT DISTINCT vendor_name, vendor_qbo_id FROM split_history WHERE show_qbo_id = %s AND vendor_name IS NOT NULL AND vendor_qbo_id IS NOT NULL"
+        vendors, _, error = self._execute_query(sql, (show_qbo_id,), fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return [], str(error)
+        return vendors, None
+
+    def get_splits(self, show_qbo_id: int, vendor_qbo_id: int):
+        """Fetches all splits for a given show and vendor."""
+        sql = "SELECT * FROM split_history WHERE show_qbo_id = %s AND vendor_qbo_id = %s ORDER BY effective_date DESC"
+        splits, _, error = self._execute_query(sql, (show_qbo_id, vendor_qbo_id), fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return [], str(error)
+        return splits, None
+
+    def create_split(self, split_data):
+        """Inserts a new split record and returns the created record."""
+        insert_sql = """
+        INSERT INTO split_history (show_qbo_id, vendor_qbo_id, show_name, vendor_name, evergreen_pct_ads, evergreen_pct_programmatic, effective_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        params = (
+            split_data.show_qbo_id,
+            split_data.vendor_qbo_id,
+            split_data.show_name,
+            split_data.vendor_name,
+            split_data.evergreen_pct_ads,
+            split_data.evergreen_pct_programmatic,
+            split_data.effective_date,
+        )
+        
+        try:
+            with get_db_connection() as db:
+                with db.cursor() as cursor:
+                    cursor.execute(insert_sql, params)
+                    new_split_id = cursor.lastrowid
+                    db.commit()
+
+                    if new_split_id:
+                        # Fetch the newly created record
+                        select_sql = "SELECT * FROM split_history WHERE split_id = %s"
+                        cursor.execute(select_sql, (new_split_id,))
+                        new_split = cursor.fetchone()
+                        return new_split, None
+                    else:
+                        return None, "Failed to create new split record; could not get new ID."
+
+        except (DatabaseConnectionError, DatabaseCredentialsError) as e:
+            print(f"Database connection error: {e}")
+            return None, str(e)
+        except pymysql.Error as e:
+            print(f"Database query error: {e}")
+            return None, str(e)
+        except Exception as e:
+            print(f"Unexpected error during split creation: {e}")
+            return None, str(e)
