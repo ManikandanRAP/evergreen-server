@@ -1,4 +1,4 @@
--- MySQL dump 10.13  Distrib 8.0.42, for Win64 (x86_64)
+-- MySQL dump 10.13  Distrib 8.0.40, for Win64 (x86_64)
 --
 -- Host: localhost    Database: evergreen
 -- ------------------------------------------------------
@@ -429,6 +429,7 @@ SET @saved_cs_client     = @@character_set_client;
  1 AS `split_evergreen_pct_ads`,
  1 AS `split_evergreen_pct_programmatic`,
  1 AS `effective_date`,
+ 1 AS `vendor_qbo_id`,
  1 AS `evergreen_percentage`,
  1 AS `partner_percentage`,
  1 AS `evergreen_compensation`,
@@ -480,16 +481,16 @@ CREATE TABLE `shows` (
   `evergreen_production_staff_name` varchar(50) DEFAULT NULL,
   `show_host_contact` text,
   `show_primary_contact` text,
-  `age_range` varchar(5) DEFAULT NULL,
+  `age_demographic` varchar(5) DEFAULT NULL,
   `gender` varchar(5) DEFAULT NULL,
   `region` enum('Urban','Rural','Both') DEFAULT NULL,
   `primary_education` enum('No high School','High School','College','Postgraduate') DEFAULT NULL,
   `secondary_education` enum('No high School','High School','College','Postgraduate') DEFAULT NULL,
-  `isUndersized` tinyint(1) DEFAULT '0',
-  `isActive` tinyint(1) DEFAULT '0',
+  `is_undersized` tinyint(1) DEFAULT '0',
+  `is_active` tinyint(1) DEFAULT '0',
   `annual_usd` json DEFAULT NULL,
-  `subnetwork_name` varchar(255) DEFAULT 'none',
-  `genre_name` enum('History','Human Resources','Human Interest','Fun & Nostalgia','True Crime','Financial','News & Poltics','Movies','Music','Religious','Health & Wellness','Parenting','Lifestyle','Storytelling','Literature','Sports','Pop Culture','Arts','Business','Philosophy') DEFAULT NULL,
+  `subnetwork_id` varchar(255) DEFAULT 'none',
+  `genre_name` enum('History','Human Resources','Human Interest','Fun & Nostalgia','True Crime','Financial','News & Politics','Movies','Music','Religious','Health & Wellness','Parenting','Lifestyle','Storytelling','Literature','Sports','Pop Culture','Arts','Business','Philosophy') NOT NULL,
   `qbo_show_id` int DEFAULT NULL,
   `qbo_show_name` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -506,7 +507,7 @@ CREATE TABLE `shows` (
 
 LOCK TABLES `shows` WRITE;
 /*!40000 ALTER TABLE `shows` DISABLE KEYS */;
-INSERT INTO `shows` VALUES ('0afddae1-0dd0-46b2-862d-974866391f30','American Criminal',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,NULL,NULL,NULL),('22ca3f00-7160-4c0a-922c-a6a5debcda08','Invisible Choir',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,NULL,NULL,NULL),('5e2a3d9e-dbee-4475-be1a-951afab1a7dd','Banking Transformed',0.00,'both',1,'strong','Branded',0.00,1,1,1,1,0,0,0,400,25.00,4,45,'2019-01-10',1.00,0.80,1.00,0.80,0.80,0.80,1.00,0.80,1.00,0.00,0.00,0.50,0.50,0.50,'Leah Haslage','Jim Marous, 5 Replace Lane, Ohio 12345, 555-555-5555, jmarous@thefinancialbrand.com','Jim Marous, 5 Replace Lane, Ohio 12345, 555-555-5555, jmarous@thefinancialbrand.com','35-54','70/30','Urban','High School','Postgraduate',0,0,'{\"2023\": 44157.0, \"2024\": 22200.0, \"2025\": 25000.0}','none','Financial',NULL,NULL),('75366c5d-ae6e-4ff0-8068-47f3f055e356','Her Money',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,NULL,NULL,NULL),('8fd5e627-56e9-49c2-b8e0-f09397d2cdd1','Disturbed',0.00,'audio',1,'strong','Original',1.00,1,0,1,0,0,0,1,100,24.00,6,40,'2020-01-05',0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,'Declan Rohrs','Internal','Internal','18-34','40/60','Both','High School','College',0,0,'{\"2023\": 0.0, \"2024\": 92662.0, \"2025\": 45716.0}','none','True Crime',NULL,NULL),('c9948613-450f-4f16-a77e-6cd82408119a','Five Minute News',0.00,'both',1,'strong','Original',0.30,1,1,1,0,0,0,1,400,14.00,4,30,'2019-07-01',1.00,0.88,1.00,0.88,0.88,0.88,1.00,0.88,1.00,0.00,0.00,0.50,0.50,0.50,'none','Anthony Davis, 5 Replace Lane, California, 12345, 323-536-3629, adavis@evergreenpodcasts.com','Anthony Davis, 5 Replace Lane, California, 12345, 323-536-3629, adavis@evergreenpodcasts.com','35-54','60/40','Urban','High School','Postgraduate',0,0,'{\"2023\": 3798.0, \"2024\": 5769.0, \"2025\": 10496.0}','none','News & Poltics',NULL,NULL);
+INSERT INTO `shows` VALUES ('0afddae1-0dd0-46b2-862d-974866391f30','American Criminal',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,'News & Politics',NULL,NULL),('22ca3f00-7160-4c0a-922c-a6a5debcda08','Invisible Choir',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,'News & Politics',NULL,NULL),('5e2a3d9e-dbee-4475-be1a-951afab1a7dd','Banking Transformed',0.00,'both',1,'strong','Branded',0.00,1,1,1,1,0,0,0,400,25.00,4,45,'2019-01-10',1.00,0.80,1.00,0.80,0.80,0.80,1.00,0.80,1.00,0.00,0.00,0.50,0.50,0.50,'Leah Haslage','Jim Marous, 5 Replace Lane, Ohio 12345, 555-555-5555, jmarous@thefinancialbrand.com','Jim Marous, 5 Replace Lane, Ohio 12345, 555-555-5555, jmarous@thefinancialbrand.com','35-54','70/30','Urban','High School','Postgraduate',0,0,'{\"2023\": 44157.0, \"2024\": 22200.0, \"2025\": 25000.0}','none','Financial',NULL,NULL),('75366c5d-ae6e-4ff0-8068-47f3f055e356','Her Money',NULL,NULL,0,NULL,NULL,NULL,0,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,0,'{\"2023\": 0, \"2024\": 0, \"2025\": 0}',NULL,'News & Politics',NULL,NULL),('8fd5e627-56e9-49c2-b8e0-f09397d2cdd1','Disturbed',0.00,'audio',1,'strong','Original',1.00,1,0,1,0,0,0,1,100,24.00,6,40,'2020-01-05',0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,'Declan Rohrs','Internal','Internal','18-34','40/60','Both','High School','College',0,0,'{\"2023\": 0.0, \"2024\": 92662.0, \"2025\": 45716.0}','none','True Crime',NULL,NULL),('c9948613-450f-4f16-a77e-6cd82408119a','Five Minute News',0.00,'both',1,'strong','Original',0.30,1,1,1,0,0,0,1,400,14.00,4,30,'2019-07-01',1.00,0.88,1.00,0.88,0.88,0.88,1.00,0.88,1.00,0.00,0.00,0.50,0.50,0.50,'none','Anthony Davis, 5 Replace Lane, California, 12345, 323-536-3629, adavis@evergreenpodcasts.com','Anthony Davis, 5 Replace Lane, California, 12345, 323-536-3629, adavis@evergreenpodcasts.com','35-54','60/40','Urban','High School','Postgraduate',0,0,'{\"2023\": 3798.0, \"2024\": 5769.0, \"2025\": 10496.0}','none','News & Politics',NULL,NULL);
 /*!40000 ALTER TABLE `shows` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -576,6 +577,7 @@ CREATE TABLE `users` (
 
 LOCK TABLES `users` WRITE;
 /*!40000 ALTER TABLE `users` DISABLE KEYS */;
+INSERT INTO `users` VALUES ('3c9d38c7115433924a18622bc7285d94','Partner User','partner@evergreen.com','$2b$12$66irOhNRGPrBvK9CkCySpOZIYoKhD7xHDCZchs6MDk8tjeiPqMKNm','partner','2025-08-12 08:37:54',614),('91847015d93859a09f826072a26a7996','Admin User','admin@evergreen.com','$2b$12$9cCAZpSbtJrHFP.MIqWPcOj.KJ8tXPLmNHPLV/RI4QVbyXA6zVn06','admin','2025-08-11 09:55:14',NULL);
 /*!40000 ALTER TABLE `users` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -628,7 +630,7 @@ UNLOCK TABLES;
 /*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
 /*!50001 CREATE ALGORITHM=UNDEFINED */
 /*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
-/*!50001 VIEW `revenue_ledger` AS select `p`.`id` AS `payment_id`,`p`.`line_linkedtxn_txnid` AS `payment_line_linkedtxn_txnid`,`p`.`customerref_name` AS `customer`,`i`.`docnumber` AS `invoice_doc_number`,`p`.`totalamt` AS `payment_amount`,`i`.`totalamt` AS `invoice_amount`,(`p`.`totalamt` - `i`.`totalamt`) AS `pending_payments`,`i`.`txndate` AS `invoice_date`,`i`.`line_description` AS `invoice_description`,`ac`.`name` AS `invoice_classref_name`,`i`.`classref_value` AS `invoice_classref_value`,`i`.`line_itemrefname` AS `invoice_itemrefname`,`sh`.`evergreen_pct_ads` AS `split_evergreen_pct_ads`,`sh`.`evergreen_pct_programmatic` AS `split_evergreen_pct_programmatic`,`sh`.`effective_date` AS `effective_date`,(case when (lower(`i`.`line_itemrefname`) like '%programmatic%') then `sh`.`evergreen_pct_programmatic` else `sh`.`evergreen_pct_ads` end) AS `evergreen_percentage`,(case when (lower(`i`.`line_itemrefname`) like '%programmatic%') then (case when (`sh`.`evergreen_pct_programmatic` is not null) then (1.0 - (`sh`.`evergreen_pct_programmatic` / 100)) else NULL end) else (case when (`sh`.`evergreen_pct_ads` is not null) then (1.0 - (`sh`.`evergreen_pct_ads` / 100)) else NULL end) end) AS `partner_percentage`,round((case when ((lower(`i`.`line_itemrefname`) like '%programmatic%') and (`sh`.`evergreen_pct_programmatic` is not null)) then ((`p`.`totalamt` * `sh`.`evergreen_pct_programmatic`) / 100) when (`sh`.`evergreen_pct_ads` is not null) then ((`p`.`totalamt` * `sh`.`evergreen_pct_ads`) / 100) else NULL end),2) AS `evergreen_compensation`,round((case when ((lower(`i`.`line_itemrefname`) like '%programmatic%') and (`sh`.`evergreen_pct_programmatic` is not null)) then (`p`.`totalamt` * (1.0 - (`sh`.`evergreen_pct_programmatic` / 100))) when (`sh`.`evergreen_pct_ads` is not null) then (`p`.`totalamt` * (1.0 - (`sh`.`evergreen_pct_ads` / 100))) else NULL end),2) AS `partner_compensation` from (((`allpayments` `p` left join `allinvoices` `i` on((`p`.`line_linkedtxn_txnid` = `i`.`id`))) left join `split_history` `sh` on((`i`.`classref_value` = `sh`.`show_qbo_id`))) left join `allclass` `ac` on((`i`.`classref_value` = `ac`.`id`))) */;
+/*!50001 VIEW `revenue_ledger` AS select `p`.`id` AS `payment_id`,`p`.`line_linkedtxn_txnid` AS `payment_line_linkedtxn_txnid`,`p`.`customerref_name` AS `customer`,`i`.`docnumber` AS `invoice_doc_number`,`p`.`totalamt` AS `payment_amount`,`i`.`totalamt` AS `invoice_amount`,(`p`.`totalamt` - `i`.`totalamt`) AS `pending_payments`,`i`.`txndate` AS `invoice_date`,`i`.`line_description` AS `invoice_description`,`ac`.`name` AS `invoice_classref_name`,`i`.`classref_value` AS `invoice_classref_value`,`i`.`line_itemrefname` AS `invoice_itemrefname`,`sh`.`evergreen_pct_ads` AS `split_evergreen_pct_ads`,`sh`.`evergreen_pct_programmatic` AS `split_evergreen_pct_programmatic`,`sh`.`effective_date` AS `effective_date`,`sh`.`vendor_qbo_id` AS `vendor_qbo_id`,(case when (lower(`i`.`line_itemrefname`) like '%programmatic%') then `sh`.`evergreen_pct_programmatic` else `sh`.`evergreen_pct_ads` end) AS `evergreen_percentage`,(case when (lower(`i`.`line_itemrefname`) like '%programmatic%') then (case when (`sh`.`evergreen_pct_programmatic` is not null) then (1.0 - (`sh`.`evergreen_pct_programmatic` / 100)) else NULL end) else (case when (`sh`.`evergreen_pct_ads` is not null) then (1.0 - (`sh`.`evergreen_pct_ads` / 100)) else NULL end) end) AS `partner_percentage`,round((case when ((lower(`i`.`line_itemrefname`) like '%programmatic%') and (`sh`.`evergreen_pct_programmatic` is not null)) then ((`p`.`totalamt` * `sh`.`evergreen_pct_programmatic`) / 100) when (`sh`.`evergreen_pct_ads` is not null) then ((`p`.`totalamt` * `sh`.`evergreen_pct_ads`) / 100) else NULL end),2) AS `evergreen_compensation`,round((case when ((lower(`i`.`line_itemrefname`) like '%programmatic%') and (`sh`.`evergreen_pct_programmatic` is not null)) then (`p`.`totalamt` * (1.0 - (`sh`.`evergreen_pct_programmatic` / 100))) when (`sh`.`evergreen_pct_ads` is not null) then (`p`.`totalamt` * (1.0 - (`sh`.`evergreen_pct_ads` / 100))) else NULL end),2) AS `partner_compensation` from (((`allpayments` `p` left join `allinvoices` `i` on((`p`.`line_linkedtxn_txnid` = `i`.`id`))) left join `split_history` `sh` on((`i`.`classref_value` = `sh`.`show_qbo_id`))) left join `allclass` `ac` on((`i`.`classref_value` = `ac`.`id`))) */;
 /*!50001 SET character_set_client      = @saved_cs_client */;
 /*!50001 SET character_set_results     = @saved_cs_results */;
 /*!50001 SET collation_connection      = @saved_col_connection */;
@@ -642,4 +644,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-08-05 22:27:45
+-- Dump completed on 2025-08-13 15:53:39
