@@ -5,8 +5,8 @@ services:
     container_name: evergreen-mysql
     environment:
       - MYSQL_ROOT_PASSWORD=rootpassword
-      - MYSQL_DATABASE=evergreen
-      - MYSQL_USER=user
+      - MYSQL_DATABASE=evergreen-db
+      - MYSQL_USER=root
       - MYSQL_PASSWORD=rootpassword
     ports:
       - "3306:3306"  # External access on port 3307
@@ -23,9 +23,9 @@ services:
       - "8000:8000"
     environment:
       - DB_HOST=db
-      - DB_USER=user
+      - DB_USER=root
       - DB_PASSWORD=rootpassword
-      - DB_NAME=evergreen
+      - DB_NAME=evergreen-db
       - DB_PORT=3306
       - SECRET_KEY=a_very_secret_key_that_should_be_in_env_vars
     networks:

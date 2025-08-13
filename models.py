@@ -3,6 +3,55 @@ from typing import Optional, List
 from datetime import date, datetime
 from enum import Enum
 import uuid
+import re
+from typing import Optional
+from pydantic import field_validator
+
+# ---- Normalization helper ----
+def _norm_key(v: Optional[str]) -> str:
+    if v is None:
+        return ""
+    v = str(v).strip()
+    v = re.sub(r"\s+", " ", v)  # collapse internal whitespace
+    return v.lower()
+
+# ---- Canonical maps (keys are normalized) ----
+MEDIA_TYPE_MAP = {"video": "video", "audio": "audio", "both": "both"}
+REL_LEVEL_MAP  = {"strong": "strong", "medium": "medium", "weak": "weak"}
+SHOW_TYPE_MAP  = {"branded": "Branded", "original": "Original", "partner": "Partner"}
+
+REGION_MAP = {"urban": "Urban", "rural": "Rural", "both": "Both"}
+
+EDU_MAP = {
+    "no high school": "No high School",
+    "high school": "High School",
+    "college": "College",
+    "postgraduate": "Postgraduate",
+}
+
+GENRE_MAP = {
+    "history": "History",
+    "human resources": "Human Resources",
+    "human interest": "Human Interest",
+    "fun & nostalgia": "Fun & Nostalgia",
+    "true crime": "True Crime",
+    "financial": "Financial",
+    "news & politics": "News & Politics",
+    "movies": "Movies",
+    "music": "Music",
+    "religious": "Religious",
+    "health & wellness": "Health & Wellness",
+    "parenting": "Parenting",
+    "lifestyle": "Lifestyle",
+    "storytelling": "Storytelling",
+    "literature": "Literature",
+    "sports": "Sports",
+    "pop culture": "Pop Culture",
+    "arts": "Arts",
+    "business": "Business",
+    "philosophy": "Philosophy",
+}
+
 
 class UserCreate(BaseModel):
     name: Optional[str] = None
@@ -92,7 +141,7 @@ class GenreName(str, Enum):
 
 class Demographic(BaseModel):
     show_id: Optional[str] = None
-    ageDemographic: Optional[str] = None
+    age_demographic: Optional[str] = None
     gender: Optional[str] = None
     region: Optional[Region] = None
     primary_education: Optional[str] = None
@@ -130,15 +179,13 @@ class ShowPartner(BaseModel):
     partner_id: Optional[str] = None
 
 class ShowCreate(BaseModel):
-    # Required field
+    # All fields are now consistently snake_case to match Python best practices
     title: str
-
-    # Optional fields with defaults
     minimum_guarantee: Optional[float] = None
     annual_usd: Optional[dict[str, float]] = None
     subnetwork_id: Optional[str] = None
     media_type: Optional[MediaType] = None
-    tentpole: bool = False
+    is_tentpole: bool = Field(False, alias='tentpole') # Using alias for DB compatibility
     relationship_level: Optional[RelationshipLevel] = None
     show_type: Optional[ShowType] = None
     evergreen_ownership_pct: Optional[float] = None
@@ -176,13 +223,75 @@ class ShowCreate(BaseModel):
     evergreen_production_staff_name: Optional[str] = None
     show_host_contact: Optional[str] = None
     show_primary_contact: Optional[str] = None
-    ageDemographic: Optional[str] = None
+    age_demographic: Optional[str] = None
     gender: Optional[str] = None
     region: Optional[str] = None
     primary_education: Optional[str] = None
     secondary_education: Optional[str] = None
-    isUndersized: Optional[bool] = False
-    isActive: Optional[bool] = True
+    is_undersized: Optional[bool] = False
+    is_active: Optional[bool] = True
+
+    # --- Case/space-insensitive normalizers for CSV import ---
+
+    @field_validator("media_type", mode="before")
+    def _v_media_type(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in MEDIA_TYPE_MAP:
+            # return Enum instance (your field type is Optional[MediaType])
+            return MediaType(MEDIA_TYPE_MAP[key])
+        raise ValueError("Invalid value for 'media_type'. Must be one of: video, audio, both.")
+
+    @field_validator("relationship_level", mode="before")
+    def _v_relationship_level(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in REL_LEVEL_MAP:
+            return RelationshipLevel(REL_LEVEL_MAP[key])
+        raise ValueError("Invalid value for 'relationship_level'. Must be one of: strong, medium, weak.")
+
+    @field_validator("show_type", mode="before")
+    def _v_show_type(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in SHOW_TYPE_MAP:
+            return ShowType(SHOW_TYPE_MAP[key])
+        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner.")
+
+    @field_validator("region", mode="before")
+    def _v_region(cls, v):
+        # Field type is Optional[str]; DB expects 'Urban'/'Rural'/'Both'
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in REGION_MAP:
+            return REGION_MAP[key]
+        raise ValueError("Invalid value for 'region'. Must be one of: Urban, Rural, Both.")
+
+    @field_validator("primary_education", "secondary_education", mode="before")
+    def _v_education(cls, v, info):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in EDU_MAP:
+            return EDU_MAP[key]
+        raise ValueError(
+            f"Invalid value for '{info.field_name}'. Must be one of: "
+            "No high School, High School, College, Postgraduate."
+        )
+
+    @field_validator("genre_name", mode="before")
+    def _v_genre_name(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in GENRE_MAP:
+            return GENRE_MAP[key]
+        raise ValueError("Invalid value for 'genre_name'.")
+
 
 class Show(BaseModel):
     id: str
@@ -191,7 +300,7 @@ class Show(BaseModel):
     annual_usd: Optional[dict[str, float]] = None
     subnetwork_id: Optional[str] = None
     media_type: Optional[MediaType] = None
-    tentpole: bool = False
+    is_tentpole: bool = Field(False, alias='tentpole')
     relationship_level: Optional[RelationshipLevel] = None
     show_type: Optional[ShowType] = None
     evergreen_ownership_pct: Optional[float] = None
@@ -229,13 +338,13 @@ class Show(BaseModel):
     evergreen_production_staff_name: Optional[str] = None
     show_host_contact: Optional[str] = None
     show_primary_contact: Optional[str] = None
-    ageDemographic:Optional[str] = None
+    age_demographic:Optional[str] = None
     gender:Optional[str] = None
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
-    isUndersized: Optional[bool] = None
-    isActive: Optional[bool] = None
+    is_undersized: Optional[bool] = None
+    is_active: Optional[bool] = None
 
 
 class Subnetwork(BaseModel):
@@ -256,7 +365,7 @@ class ShowUpdate(BaseModel):
     annual_usd: Optional[dict[str, float]] = None
     subnetwork_id: Optional[str] = None
     media_type: Optional[MediaType] = None
-    tentpole: bool = False
+    is_tentpole: Optional[bool] = Field(None, alias='tentpole')
     relationship_level: Optional[RelationshipLevel] = None
     show_type: Optional[ShowType] = None
     evergreen_ownership_pct: Optional[float] = None
@@ -294,14 +403,75 @@ class ShowUpdate(BaseModel):
     evergreen_production_staff_name: Optional[str] = None
     show_host_contact: Optional[str] = None
     show_primary_contact: Optional[str] = None
-    ageDemographic:Optional[str] = None
+    age_demographic:Optional[str] = None
     gender:Optional[str] = None
-    isUndersized: Optional[bool] = None
-    isActive: Optional[bool] = None
+    is_undersized: Optional[bool] = None
+    is_active: Optional[bool] = None
     primary_education: Optional[str] = None
     secondary_education: Optional[str] = None
     region: Optional[str] = None
-    ageDemographic: Optional[str] = None
+        
+    # --- Case/space-insensitive normalizers for CSV import ---
+
+    @field_validator("media_type", mode="before")
+    def _v_media_type(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in MEDIA_TYPE_MAP:
+            # return Enum instance (your field type is Optional[MediaType])
+            return MediaType(MEDIA_TYPE_MAP[key])
+        raise ValueError("Invalid value for 'media_type'. Must be one of: video, audio, both.")
+
+    @field_validator("relationship_level", mode="before")
+    def _v_relationship_level(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in REL_LEVEL_MAP:
+            return RelationshipLevel(REL_LEVEL_MAP[key])
+        raise ValueError("Invalid value for 'relationship_level'. Must be one of: strong, medium, weak.")
+
+    @field_validator("show_type", mode="before")
+    def _v_show_type(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in SHOW_TYPE_MAP:
+            return ShowType(SHOW_TYPE_MAP[key])
+        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner.")
+
+    @field_validator("region", mode="before")
+    def _v_region(cls, v):
+        # Field type is Optional[str]; DB expects 'Urban'/'Rural'/'Both'
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in REGION_MAP:
+            return REGION_MAP[key]
+        raise ValueError("Invalid value for 'region'. Must be one of: Urban, Rural, Both.")
+
+    @field_validator("primary_education", "secondary_education", mode="before")
+    def _v_education(cls, v, info):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in EDU_MAP:
+            return EDU_MAP[key]
+        raise ValueError(
+            f"Invalid value for '{info.field_name}'. Must be one of: "
+            "No high School, High School, College, Postgraduate."
+        )
+
+    @field_validator("genre_name", mode="before")
+    def _v_genre_name(cls, v):
+        if v in (None, ""):
+            return None
+        key = _norm_key(v)
+        if key in GENRE_MAP:
+            return GENRE_MAP[key]
+        raise ValueError("Invalid value for 'genre_name'.")
+
 
 
 class PartnerCreate(BaseModel):

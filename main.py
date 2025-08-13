@@ -299,5 +299,31 @@ def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_us
     return new_split
 
 
+@app.get("/ledger")
+async def get_ledger(current_user: dict = Depends(get_current_active_user)):
+    client = SqlClient()
+ 
+    if current_user.get("role") == "admin":
+        ledger, error = client.get_ledger()
+    else:
+        ledger, error = client.get_ledger(current_user.get("mapped_vendor_qbo_id"))
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))  
+    return ledger
+ 
+@app.get("/partner_payouts")
+async def get_partners_payouts(current_user: dict = Depends(get_current_active_user)):
+    client = SqlClient()
+ 
+    if current_user.get("role") == "admin":
+        partners_payouts, error = client.get_partner_payouts()
+    else:
+        partners_payouts, error = client.get_partner_payouts(current_user.get("vendor_qbo_id"))
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))  
+    return partners_payouts
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
