@@ -15,51 +15,51 @@ from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT
 COLUMN_MAPPING = {
     # Basic Info
     "title": "title",
-    "show_type": "showType",
-    "media_type": "format",
-    "relationship_level": "relationship",
+    "show_type": "show_type",
+    "media_type": "media_type",
+    "relationship_level": "relationship_level",
     "start_date": "start_date",
     "subnetwork_id": "subnetwork_id",
-    "tentpole": "isTentpole",
-    "is_original": "isOriginal",
+    "tentpole": "is_tentpole",
+    "is_original": "is_original",
     "genre_name": "genre_name",
 
     # Financial
-    "minimum_guarantee": "minimumGuarantee",
-    "evergreen_ownership_pct": "ownershipPercentage",
-    "latest_cpm_usd": "latestCPM",
-    "has_sponsorship_revenue": "hasSponsorshipRevenue",
-    "has_non_evergreen_revenue": "hasNonEvergreenRevenue",
-    "requires_partner_access": "requiresPartnerLedgerAccess",
-    "has_branded_revenue": "hasBrandedRevenue",
-    "has_marketing_revenue": "hasMarketingRevenue",
-    "has_web_mgmt_revenue": "hasWebManagementRevenue",
+    "minimum_guarantee": "minimum_guarantee",
+    "evergreen_ownership_pct": "evergreen_ownership_pct",
+    "latest_cpm_usd": "latest_cpm_usd",
+    "has_sponsorship_revenue": "has_sponsorship_revenue",
+    "has_non_evergreen_revenue": "has_non_evergreen_revenue",
+    "requires_partner_access": "requires_partner_access",
+    "has_branded_revenue": "has_branded_revenue",
+    "has_marketing_revenue": "has_marketing_revenue",
+    "has_web_mgmt_revenue": "has_web_mgmt_revenue",
 
     # Contract Splits
-    "side_bonus_percent": "sideBonusPercent",
-    "youtube_ads_percent": "youtubeAdsPercent",
-    "subscriptions_percent": "subscriptionsPercent",
-    "standard_ads_percent": "standardAdsPercent",
-    "sponsorship_ad_fp_lead_percent": "sponsorshipAdFpLeadPercent",
-    "sponsorship_ad_partner_lead_percent": "sponsorshipAdPartnerLeadPercent",
-    "sponsorship_ad_partner_sold_percent": "sponsorshipAdPartnerSoldPercent",
-    "programmatic_ads_span_percent": "programmaticAdsSpanPercent",
-    "merchandise_percent": "merchandisePercent",
-    "branded_revenue_percent": "brandedRevenuePercent",
-    "marketing_services_revenue_percent": "marketingServicesRevenuePercent",
+    "side_bonus_percent": "side_bonus_percent",
+    "youtube_ads_percent": "youtube_ads_percent",
+    "subscriptions_percent": "subscriptions_percent",
+    "standard_ads_percent": "standard_ads_percent",
+    "sponsorship_ad_fp_lead_percent": "sponsorship_ad_fp_lead_percent",
+    "sponsorship_ad_partner_lead_percent": "sponsorship_ad_partner_lead_percent",
+    "sponsorship_ad_partner_sold_percent": "sponsorship_ad_partner_sold_percent",
+    "programmatic_ads_span_percent": "programmatic_ads_span_percent",
+    "merchandise_percent": "merchandise_percent",
+    "branded_revenue_percent": "branded_revenue_percent",
+    "marketing_services_revenue_percent": "marketing_services_revenue_percent",
 
     # Hands Off Splits
-    "direct_customer_hands_off_percent": "directCustomerHandsOffPercent",
-    "youtube_hands_off_percent": "youtubeHandsOffPercent",
-    "subscription_hands_off_percent": "subscriptionHandsOffPercent",
+    "direct_customer_hands_off_percent": "direct_customer_hands_off_percent",
+    "youtube_hands_off_percent": "youtube_hands_off_percent",
+    "subscription_hands_off_percent": "subscription_hands_off_percent",
 
     # Content Details
-    "shows_per_year": "showsPerYear",
-    "ad_slots": "adSlots",
-    "avg_show_length_mins": "averageLength",
-    "show_host_contact": "primaryContactHost",
-    "show_primary_contact": "primaryContactShow",
-    "evergreen_production_staff_name": "evergreenProductionStaffName",
+    "shows_per_year": "shows_per_year",
+    "ad_slots": "ad_slots",
+    "avg_show_length_mins": "avg_show_length_mins",
+    "show_host_contact": "show_host_contact",
+    "show_primary_contact": "show_primary_contact",
+    "evergreen_production_staff_name": "evergreen_production_staff_name",
 
     # Demographics
     "age_demographic": "age_demographic",
@@ -67,11 +67,11 @@ COLUMN_MAPPING = {
     "region": "region",
     "primary_education": "primary_education",
     "secondary_education": "secondary_education",
-    "is_active": "isActive",
-    "is_undersized": "isUndersized",
+    "is_active": "is_active",
+    "is_undersized": "is_undersized",
     
     # Internal / Other
-    "show_name_in_qbo": "qbo_show_name",
+    "qbo_show_name": "show_name_in_qbo",
     "id": "id",
     "annual_usd": "annual_usd"
 }
@@ -216,7 +216,7 @@ class SqlClient:
         except (DatabaseConnectionError, DatabaseCredentialsError):
             raise
 
-    def create_podcast(self, show_data):
+    def create_podcast_(self, show_data):
         try:
             print('in create function')
             print(show_data)
@@ -231,7 +231,7 @@ class SqlClient:
  
             # show_dict["genre_name"] = show_dict.pop("genre_id")
             show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
-            # show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
+            show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
             show_dict["tentpole"] = show_dict.pop("is_tentpole")
             
 
@@ -260,14 +260,7 @@ class SqlClient:
             fetch_sql = "SELECT * FROM shows WHERE id = %s"
             new_show, _, fetch_error = self._execute_query(fetch_sql, (show_id,), fetch='one')
             print('new show',new_show)
-            # if 'annual_usd' in new_show and isinstance(new_show['annual_usd'], str):
-            #     try:
-            #         new_show['annual_usd'] = {
-            #             k: float(v) if isinstance(v, (int, float, str)) and v not in (None, "") else 0.0
-            #             for k, v in json.loads(new_show['annual_usd']).items()
-            #         }
-            #     except (json.JSONDecodeError, ValueError, TypeError):
-            #         new_show['annual_usd'] = {}
+           
             if 'annual_usd' in new_show and isinstance(new_show['annual_usd'], str):
                 try:
                     new_show['annual_usd'] = json.loads(new_show['annual_usd'])
@@ -282,6 +275,70 @@ class SqlClient:
             return new_show, None
         except Exception as e:
             print(e)
+    def create_podcast(self, show_data):
+        try:
+            print('in create function')
+            print(show_data)
+        
+            show_id = os.urandom(16).hex()
+            show_dict = show_data.dict()
+            show_dict['id'] = show_id
+            show_dict.pop("annual_usd", None)
+
+            show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
+            show_dict["tentpole"] = show_dict.pop("is_tentpole")
+
+            # --- Normalize revenues ---
+            def _norm(v):
+                if v in (None, "None", "", "null", "NULL"):
+                    return "0.0"
+                try:
+                    return f"{float(v):.1f}"
+                except (TypeError, ValueError):
+                    return "0.0"
+
+            r2023 = _norm(show_dict.pop("revenue_2023", None))
+            r2024 = _norm(show_dict.pop("revenue_2024", None))
+            r2025 = _norm(show_dict.pop("revenue_2025", None))
+
+            annual_usd_data = {"2023": r2023, "2024": r2024, "2025": r2025}
+            show_dict["annual_usd"] = json.dumps(annual_usd_data)
+            # --- end normalize ---
+
+            print(show_dict)
+
+            columns = ', '.join([f'`{k}`' for k in show_dict.keys()])
+            placeholders = ', '.join(['%s'] * len(show_dict))
+            sql = f"INSERT INTO shows ({columns}) VALUES ({placeholders})"
+            values = tuple(show_dict.values())
+            print(sql, values)
+
+            _, _, error = self._execute_query(sql, values, is_transaction=True)
+            if error:
+                return None, error
+
+            fetch_sql = "SELECT * FROM shows WHERE id = %s"
+            new_show, _, fetch_error = self._execute_query(fetch_sql, (show_id,), fetch='one')
+            print('new show', new_show)
+
+            if 'annual_usd' in new_show and isinstance(new_show['annual_usd'], str):
+                try:
+                    new_show['annual_usd'] = json.loads(new_show['annual_usd'])
+                except json.JSONDecodeError:
+                    new_show['annual_usd'] = {}
+
+            annual_usd = new_show.get('annual_usd', {})
+            # keep as strings to match storage ("0.0")
+            new_show['revenue_2023'] = annual_usd.get('2023', "0.0")
+            new_show['revenue_2024'] = annual_usd.get('2024', "0.0")
+            new_show['revenue_2025'] = annual_usd.get('2025', "0.0")
+
+            if fetch_error:
+                return None, fetch_error
+            return new_show, None
+        except Exception as e:
+            print(e)
+
 
     def update_podcast(self, show_id: str, show_data: BaseModel):
         try:
@@ -292,15 +349,32 @@ class SqlClient:
             for model_key, db_col in COLUMN_MAPPING.items():
                 if model_key in update_dict:
                     db_ready_dict[db_col] = update_dict[model_key]
+            print("update_dict",update_dict)
+            
+            # update_dict["show_type"] = update_dict.pop("showType")
 
             if "revenue_2023" in update_dict or "revenue_2024" in update_dict or "revenue_2025" in update_dict:
                 existing_show, _ = self.get_podcast_by_id(show_id)
                 annual_usd_data = {}
                 if existing_show and isinstance(existing_show.get('annual_usd'), dict):
                     annual_usd_data = existing_show.get('annual_usd')
-                annual_usd_data["2023"] = str(update_dict.get("revenue_2023", annual_usd_data.get("2023", 0)) or 0)
-                annual_usd_data["2024"] = str(update_dict.get("revenue_2024", annual_usd_data.get("2024", 0)) or 0)
-                annual_usd_data["2025"] = str(update_dict.get("revenue_2025", annual_usd_data.get("2025", 0)) or 0)
+                # annual_usd_data["2023"] = str(update_dict.get("revenue_2023", annual_usd_data.get("2023", 0)) or 0)
+                # annual_usd_data["2024"] = str(update_dict.get("revenue_2024", annual_usd_data.get("2024", 0)) or 0)
+                # annual_usd_data["2025"] = str(update_dict.get("revenue_2025", annual_usd_data.get("2025", 0)) or 0)
+
+                def _norm(v):
+                    if v in (None, "None", "", "null", "NULL"):
+                        return "0.0"
+                    try:
+                        return f"{float(v):.1f}"
+                    except (TypeError, ValueError):
+                        return "0.0"
+
+                r2023 = _norm(update_dict.pop("revenue_2023", None))
+                r2024 = _norm(update_dict.pop("revenue_2024", None))
+                r2025 = _norm(update_dict.pop("revenue_2025", None))
+
+                annual_usd_data = {"2023": r2023, "2024": r2024, "2025": r2025}                
                 db_ready_dict["annual_usd"] = json.dumps(annual_usd_data)
 
             set_clause = ", ".join([f"`{key}` = %s" for key in db_ready_dict.keys()])
