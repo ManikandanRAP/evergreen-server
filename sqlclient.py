@@ -8,6 +8,7 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT
+from utils.date_normalizer import *
 
 # This dictionary provides a definitive, complete mapping from the Python
 # model's field names (snake_case) to the actual database column names.
@@ -177,6 +178,8 @@ class SqlClient:
             show['revenue_2025'] = annual_usd.get('2025', 0)
         return shows
 
+    
+
     def get_podcast_by_id(self, show_id: str):
         sql = "SELECT * FROM shows WHERE id = %s"
         show, _, error = self._execute_query(sql, (show_id,), fetch='one')
@@ -287,6 +290,8 @@ class SqlClient:
 
             show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             show_dict["tentpole"] = show_dict.pop("is_tentpole")
+
+            show_dict["start_date"] = normalize_mysql_date(show_dict["start_date"])
 
             # --- Normalize revenues ---
             def _norm(v):

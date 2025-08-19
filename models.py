@@ -6,6 +6,7 @@ import uuid
 import re
 from typing import Optional
 from pydantic import field_validator
+from utils.date_normalizer import normalize_mysql_date
 
 # ---- Normalization helper ----
 def _norm_key(v: Optional[str]) -> str:
@@ -291,6 +292,11 @@ class ShowCreate(BaseModel):
         if key in GENRE_MAP:
             return GENRE_MAP[key]
         raise ValueError("Invalid value for 'genre_name'.")
+    @field_validator("start_date", mode="before")
+    @classmethod
+    def _normalize_start_date(cls, v):
+        # Accept month-first inputs and convert to 'YYYY-MM-DD'
+        return normalize_mysql_date(v) if v is not None else None
 
 
 class Show(BaseModel):
@@ -492,3 +498,39 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+
+
+
+class PodcastIn(BaseModel):
+    title: str
+    show_type: str
+    media_type: str
+    relationship_level: str
+    start_date: Optional[str] = None
+    minimum_guarantee: Optional[float] = None
+    evergreen_ownership_pct: Optional[float] = None
+    genre_name: Optional[str] = None
+    subnetwork_id: Optional[str] = None
+    tentpole: Optional[bool] = None
+    is_original: Optional[bool] = None
+    revenue_2023: Optional[float] = None
+    revenue_2024: Optional[float] = None
+    revenue_2025: Optional[float] = None
+    is_active: Optional[bool] = None
+    is_undersized: Optional[bool] = None
+    standard_ads_percent: Optional[float] = None
+    programmatic_ads_span_percent: Optional[float] = None
+    has_sponsorship_revenue: Optional[bool] = None
+    has_non_evergreen_revenue: Optional[bool] = None
+    requires_partner_access: Optional[bool] = None
+    has_branded_revenue: Optional[bool] = None
+    has_marketing_revenue: Optional[bool] = None
+    has_web_mgmt_revenue: Optional[bool] = None
+
+    @field_validator("start_date", mode="before")
+    @classmethod
+    def _normalize_start_date(cls, v):
+        # Accept month-first inputs and convert to 'YYYY-MM-DD'
+        return normalize_mysql_date(v) if v is not None else None
+

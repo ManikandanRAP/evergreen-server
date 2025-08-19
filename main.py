@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from typing import Optional, List
-from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate, Split, SplitCreate
+from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate, Split, SplitCreate, PodcastIn
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
 from config import SECRET_KEY, ALGORITHM
@@ -123,6 +123,7 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
     successful_imports = 0
     failed_imports = 0
     errors = []
+    print(shows_data)
     for i, show_data in enumerate(shows_data):
         # Skip rows where title is not provided or empty
         if not show_data.title or not show_data.title.strip():

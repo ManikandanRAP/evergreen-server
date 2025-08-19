@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+from utils.date_normalizer import *
 
 BASE_URL = "http://localhost:8000"
 
@@ -128,6 +129,11 @@ def main():
             print("Manual cleanup may be required for the following resources:")
             print(f"- Podcast ID: {created_podcast_id}")
             print(f"- Partner ID: {created_partner_id}")
+def date_check():
+    mysql_date = "9/9/25"
+    print(normalize_mysql_date(mysql_date))
 
 if __name__ == "__main__":
-    main()
+    # main()
+    date_check()
+
