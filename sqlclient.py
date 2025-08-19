@@ -21,7 +21,7 @@ COLUMN_MAPPING = {
     "relationship_level": "relationship_level",
     "start_date": "start_date",
     "subnetwork_id": "subnetwork_id",
-    "tentpole": "is_tentpole",
+    "is_tentpole": "tentpole",
     "is_original": "is_original",
     "genre_name": "genre_name",
 
@@ -184,9 +184,26 @@ class SqlClient:
         sql = "SELECT * FROM shows WHERE id = %s"
         show, _, error = self._execute_query(sql, (show_id,), fetch='one')
         if error:
-            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): 
+                raise error
             return None, str(error)
+        if not show:
+            return None, None
+        # Normalize annual_usd like in get_all_podcasts
+        annual_usd_raw = show.get('annual_usd')
+        if isinstance(annual_usd_raw, str):
+            try:
+                annual_usd = json.loads(annual_usd_raw)
+            except json.JSONDecodeError:
+                annual_usd = {}
+        else:
+            annual_usd = annual_usd_raw if isinstance(annual_usd_raw, dict) else {}
+        show['annual_usd'] = annual_usd
+        show['revenue_2023'] = annual_usd.get('2023', 0)
+        show['revenue_2024'] = annual_usd.get('2024', 0)
+        show['revenue_2025'] = annual_usd.get('2025', 0)
         return show, None
+
 
     def filter_podcasts(self, filters: dict):
         query = "SELECT * FROM shows"
@@ -388,7 +405,12 @@ class SqlClient:
 
             _, rows_affected, error = self._execute_query(sql_update, tuple(values), is_transaction=True)
             if error: raise error
-            if rows_affected == 0: return None, f"Podcast with id {show_id} not found"
+            if rows_affected == 0:
+                # No rows changed (values may be identical). Verify existence and return current row.
+                existing, _ = self.get_podcast_by_id(show_id)
+                if existing:
+                    return existing, None
+                return None, f"Podcast with id {show_id} not found"
             
             return self.get_podcast_by_id(show_id)
         except Exception as e:
