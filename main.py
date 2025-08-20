@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from typing import Optional, List
-from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate, Split, SplitCreate, PodcastIn
+from models import Show, User, Token, TokenData, PartnerCreate, PasswordUpdate, ShowUpdate, ShowCreate, MediaType, RelationshipLevel, ShowType, UserResponse, UserCreate, Split, SplitCreate, PodcastIn, UserListItem, UserUpdate
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
 from config import SECRET_KEY, ALGORITHM
@@ -108,6 +108,107 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 @app.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
     return current_user
+
+# ===== NEW: Users Management (Admin only) =====
+
+@app.get("/users", response_model=List[UserListItem])
+def list_users(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    users, error = client.get_all_users()
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+    # Map vendor_qbo_id -> vendor_name
+    vendors = client.get_all_vendors()
+    vendor_map = {}
+    for v in vendors or []:
+        vid = v.get("vendor_qbo_id")
+        vname = v.get("vendor_name") or v.get("vendor_qbo_name") or v.get("displayname")
+        if vid is not None and vname:
+            try:
+                vendor_map[int(vid)] = vname
+            except Exception:
+                pass
+
+    result = []
+    for u in users or []:
+        vid = u.get("mapped_vendor_qbo_id")
+        result.append({
+            "id": str(u.get("id")),
+            "name": u.get("name"),
+            "email": u.get("email"),
+            "role": u.get("role"),
+            "created_at": u.get("created_at"),
+            "mapped_vendor_qbo_id": vid,
+            "mapped_vendor_name": (vendor_map.get(int(vid)) if vid is not None else None),
+        })
+    return result
+
+@app.put("/users/{user_id}", response_model=UserListItem)
+def update_user(user_id: str, payload: UserUpdate, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+
+    # Ensure user exists
+    existing_user, err = client.get_user_by_id(user_id)
+    if err:
+        raise HTTPException(status_code=500, detail=str(err))
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Email uniqueness if changing
+    if payload.email and payload.email != existing_user.get("email"):
+        other, e2 = client.get_user_by_email(payload.email)
+        if e2:
+            raise HTTPException(status_code=500, detail=str(e2))
+        if other and other.get("id") != user_id:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Build update kwargs only for provided fields
+    update_kwargs = {}
+    if "name" in payload.model_fields_set:
+        update_kwargs["name"] = payload.name
+    if "email" in payload.model_fields_set:
+        update_kwargs["email"] = payload.email
+    if "mapped_vendor_qbo_id" in payload.model_fields_set:
+        # can be None to clear mapping
+        update_kwargs["mapped_vendor_qbo_id"] = payload.mapped_vendor_qbo_id
+    if payload.password:
+        update_kwargs["password_hash"] = get_password_hash(payload.password)
+
+    ok, e3 = client.update_user(user_id=user_id, **update_kwargs)
+    if not ok:
+        raise HTTPException(status_code=500, detail=str(e3))
+
+    # Re-fetch and return enriched row
+    updated, e4 = client.get_user_by_id(user_id)
+    if e4:
+        raise HTTPException(status_code=500, detail=str(e4))
+    if not updated:
+        raise HTTPException(status_code=500, detail="Updated user fetch failed")
+
+    vendors = client.get_all_vendors()
+    vendor_map = {}
+    for v in vendors or []:
+        vid = v.get("vendor_qbo_id")
+        vname = v.get("vendor_name") or v.get("vendor_qbo_name") or v.get("displayname")
+        if vid is not None and vname:
+            try:
+                vendor_map[int(vid)] = vname
+            except Exception:
+                pass
+
+    vid = updated.get("mapped_vendor_qbo_id")
+    return {
+        "id": str(updated.get("id")),
+        "name": updated.get("name"),
+        "email": updated.get("email"),
+        "role": updated.get("role"),
+        "created_at": updated.get("created_at"),
+        "mapped_vendor_qbo_id": vid,
+        "mapped_vendor_name": (vendor_map.get(int(vid)) if vid is not None else None),
+    }
+
+# ===== END new users management =====
 
 @app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
@@ -299,6 +400,22 @@ def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_us
         raise HTTPException(status_code=500, detail=error)
     return new_split
 
+# ===== NEW: Catalog endpoints for mapping (admin only) =====
+@app.get("/split-management/catalog/all-shows")
+def catalog_all_shows(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    shows, error = client.get_catalog_all_shows()
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return shows
+
+@app.get("/split-management/catalog/all-vendors")
+def catalog_all_vendors(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    vendors, error = client.get_catalog_all_vendors()
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return vendors
 
 @app.get("/ledger")
 async def get_ledger(current_user: dict = Depends(get_current_active_user)):
@@ -327,4 +444,3 @@ async def get_partners_payouts(current_user: dict = Depends(get_current_active_u
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

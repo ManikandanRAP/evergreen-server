@@ -534,3 +534,19 @@ class PodcastIn(BaseModel):
         # Accept month-first inputs and convert to 'YYYY-MM-DD'
         return normalize_mysql_date(v) if v is not None else None
 
+# ===== NEW (additions for admin user listing/updating) =====
+
+class UserListItem(BaseModel):
+    id: str
+    name: Optional[str] = None
+    email: EmailStr
+    role: Optional[str] = None
+    created_at: Optional[datetime] = None
+    mapped_vendor_qbo_id: Optional[int] = None
+    mapped_vendor_name: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None  # will be hashed server-side if provided
+    mapped_vendor_qbo_id: Optional[int] = None
