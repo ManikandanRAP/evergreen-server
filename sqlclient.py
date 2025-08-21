@@ -516,19 +516,6 @@ class SqlClient:
             return None, str(e)
         except Exception as e:
             return None, str(e)
-
-    def get_ledger(self, partner_id: str = None):
-        if partner_id:
-            sql = "SELECT * FROM revenue_ledger WHERE vendor_qbo_id = %s"
-            params = (partner_id,)
-        else:
-            sql = "SELECT * FROM revenue_ledger"
-            params = None
-        ledger, _, error = self._execute_query(sql, params, fetch='all')
-        if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
-            raise error
-        return ledger, error
- 
    
     
     def get_catalog_all_shows(self):
@@ -565,7 +552,20 @@ class SqlClient:
             return [], str(error)
         return vendors, None
 
-def get_partner_payouts(self, partner_id: str = None):
+    def get_ledger(self, partner_id: str = None):
+        if partner_id:
+            sql = "SELECT * FROM revenue_ledger WHERE vendor_qbo_id = %s"
+            params = (partner_id,)
+        else:
+            sql = "SELECT * FROM revenue_ledger"
+            params = None
+        ledger, _, error = self._execute_query(sql, params, fetch='all')
+        if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+            raise error
+        return ledger, error
+ 
+   
+    def get_partner_payouts(self, partner_id: str = None):
         if partner_id:
             sql = "SELECT * FROM ledger_partnerpayouts WHERE vendor_qbo_id = %s"
             params = (partner_id,)
