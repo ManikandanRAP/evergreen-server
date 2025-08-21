@@ -530,7 +530,42 @@ class SqlClient:
         return ledger, error
  
    
-    def get_partner_payouts(self, partner_id: str = None):
+    
+    def get_catalog_all_shows(self):
+        """Return all shows from allclass for independent mapping dropdowns."""
+        sql = """
+            SELECT 
+                id AS show_qbo_id,
+                name AS show_name
+            FROM allclass
+            WHERE name IS NOT NULL AND id IS NOT NULL
+            ORDER BY name
+        """
+        shows, _, error = self._execute_query(sql, fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return [], str(error)
+        return shows, None
+
+    def get_catalog_all_vendors(self):
+        """Return all vendors from allvendors for independent mapping dropdowns."""
+        sql = """
+            SELECT 
+                id AS vendor_qbo_id,
+                displayname AS vendor_name
+            FROM allvendors
+            WHERE displayname IS NOT NULL AND id IS NOT NULL
+            ORDER BY displayname
+        """
+        vendors, _, error = self._execute_query(sql, fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return [], str(error)
+        return vendors, None
+
+def get_partner_payouts(self, partner_id: str = None):
         if partner_id:
             sql = "SELECT * FROM ledger_partnerpayouts WHERE vendor_qbo_id = %s"
             params = (partner_id,)
