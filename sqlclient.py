@@ -441,6 +441,30 @@ class SqlClient:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
         return user, error
 
+    # ---------- NEW: update_user ----------
+    def update_user(self, user_id: str, **kwargs):
+        """
+        Update a user row. Allowed fields: name, email, password_hash, mapped_vendor_qbo_id.
+        Returns (ok: bool, error: Optional[str])
+        """
+        allowed = {"name", "email", "password_hash", "mapped_vendor_qbo_id"}
+        update_dict = {k: v for k, v in kwargs.items() if k in allowed}
+
+        if not update_dict:
+            return False, "No fields to update"
+
+        set_clause = ", ".join([f"{col} = %s" for col in update_dict.keys()])
+        sql = f"UPDATE users SET {set_clause} WHERE id = %s"
+        params = tuple(update_dict.values()) + (user_id,)
+
+        _, rows_affected, error = self._execute_query(sql, params, is_transaction=True)
+        if error:
+            return False, str(error)
+        if rows_affected == 0:
+            return False, "User not found"
+        return True, None
+    # --------- end update_user ----------
+
     def get_split_shows_for_user(self, user: dict):
         # Allow admin and internal to view the full list; partners get their own only
         if user.get('role') in ('admin', 'internal'):
