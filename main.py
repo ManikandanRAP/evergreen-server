@@ -1,9 +1,13 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime, timezone
+import uuid
+
+from fastapi.middleware.cors import CORSMiddleware
+
 from models import (
     Show,
     User,
@@ -27,11 +31,7 @@ from models import (
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
 from config import SECRET_KEY, ALGORITHM
-from fastapi.middleware.cors import CORSMiddleware
-import uuid
-from datetime import datetime, timezone
 
-# --- FastAPI App Initialization ---
 app = FastAPI(
     title="Evergreen Podcasts API",
     description="API for managing podcasts and partners with JWT authentication.",
@@ -48,8 +48,9 @@ app.add_middleware(
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# --- Authentication & Authorization ---
-
+# ----------------------
+# Auth helpers
+# ----------------------
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -79,47 +80,9 @@ async def get_admin_user(current_user: User = Depends(get_current_active_user)):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
-# --- API Endpoints ---
-
-@app.post("/create_users", response_model=UserResponse)
-def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
-    # Admin can create admin/partner/internal
-    client = SqlClient()
-    existing_user, _ = client.get_user_by_email(user_data.email)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user_id = str(uuid.uuid4())
-    hashed_password = get_password_hash(user_data.password)
-    sql = """
-    INSERT INTO users (id, name, email, password_hash, role, created_at, mapped_vendor_qbo_id)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """
-    values = (
-        user_id,
-        user_data.name,
-        user_data.email,
-        hashed_password,
-        user_data.role,
-        datetime.now(timezone.utc),
-        user_data.mapped_vendor_qbo_id,
-    )
-    _, _, error = client._execute_query(sql, values, is_transaction=True)
-    if error:
-        raise HTTPException(status_code=500, detail="Error inserting user into DB")
-    return {
-        "id": user_id,
-        "name": user_data.name,
-        "email": user_data.email,
-        "role": user_data.role,
-        "mapped_vendor_qbo_id": user_data.mapped_vendor_qbo_id,
-    }
-
-@app.get("/vendors")
-def get_vendors(admin: User = Depends(get_admin_user)):
-    client = SqlClient()
-    vendors = client.get_all_vendors()
-    return vendors
-
+# ----------------------
+# Auth endpoints
+# ----------------------
 @app.post("/login")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
@@ -133,11 +96,46 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(data={"sub": user.get("email")})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/users/me", response_model=UserResponse)
+@app.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
     return current_user
 
-# ===== Users Management (Admin only) =====
+# ----------------------
+# Users (admin only)
+# ----------------------
+@app.post("/create_users", response_model=UserResponse)
+def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
+    # Admin can create admin/partner/internal
+    client = SqlClient()
+    existing_user, _ = client.get_user_by_email(user_data.email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user_id = str(uuid.uuid4())
+    hashed_password = get_password_hash(user_data.password)
+    sql = """
+    INSERT INTO users (id, name, email, password_hash, role, created_at, mapped_vendor_qbo_id)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    values = (
+        user_id,
+        user_data.name,
+        user_data.email,
+        hashed_password,
+        user_data.role,  # "admin" | "partner" | "internal"
+        datetime.now(timezone.utc),
+        user_data.mapped_vendor_qbo_id,
+    )
+    _, _, error = client._execute_query(sql, values, is_transaction=True)
+    if error:
+        raise HTTPException(status_code=500, detail="Error inserting user into DB")
+    return {
+        "id": user_id,
+        "name": user_data.name,
+        "email": user_data.email,
+        "role": user_data.role,
+        "mapped_vendor_qbo_id": user_data.mapped_vendor_qbo_id,
+    }
 
 @app.get("/users", response_model=List[UserListItem])
 def list_users(admin: User = Depends(get_admin_user)):
@@ -200,7 +198,7 @@ def update_user(user_id: str, payload: UserUpdate, admin: User = Depends(get_adm
     if "email" in payload.model_fields_set:
         update_kwargs["email"] = payload.email
     if "mapped_vendor_qbo_id" in payload.model_fields_set:
-        update_kwargs["mapped_vendor_qbo_id"] = payload.mapped_vendor_qbo_id  # can be None
+        update_kwargs["mapped_vendor_qbo_id"] = payload.mapped_vendor_qbo_id
     if payload.password:
         update_kwargs["password_hash"] = get_password_hash(payload.password)
 
@@ -237,10 +235,24 @@ def update_user(user_id: str, payload: UserUpdate, admin: User = Depends(get_adm
         "mapped_vendor_name": (vendor_map.get(int(vid)) if vid is not None else None),
     }
 
-# ===== END users management =====
+@app.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: str, admin: User = Depends(get_admin_user)):
+    # Prevent self-deletion
+    if str(admin.get("id")) == str(user_id):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    client = SqlClient()
+    success, error = client.delete_user(user_id)
+    if not success:
+        # If sqlclient returns "User not found", map to 404
+        if error and "not found" in error.lower():
+            raise HTTPException(status_code=404, detail=error)
+        raise HTTPException(status_code=500, detail=error or "Failed to delete user")
+    # 204 No Content
+    return Response(status_code=204)
 
-# ===== Shows (READ: admin + internal; WRITE: admin only) =====
-
+# ----------------------
+# Shows (READ: admin+internal; WRITE: admin)
+# ----------------------
 @app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
     client = SqlClient()
@@ -256,12 +268,10 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
     failed_imports = 0
     errors = []
     for i, show_data in enumerate(shows_data):
-        # Skip rows where title is not provided or empty
         if not show_data.title or not show_data.title.strip():
             failed_imports += 1
             errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
             continue
-
         new_show, error = client.create_podcast(show_data)
         if error:
             failed_imports += 1
@@ -355,8 +365,9 @@ def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
-# --- Split Management Endpoints (no change to permissions for Internal) ---
-
+# ----------------------
+# Split management (reads allowed for all logged-in roles, writes admin-only)
+# ----------------------
 @app.get("/split-management/shows")
 def get_split_shows(current_user: User = Depends(get_current_active_user)):
     client = SqlClient()
@@ -389,7 +400,9 @@ def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_us
         raise HTTPException(status_code=500, detail=error)
     return new_split
 
-# ===== Catalog endpoints for mapping (admin only) =====
+# ----------------------
+# Catalog for mapping (admin only)
+# ----------------------
 @app.get("/split-management/catalog/all-shows")
 def catalog_all_shows(admin: User = Depends(get_admin_user)):
     client = SqlClient()
@@ -406,12 +419,12 @@ def catalog_all_vendors(admin: User = Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail=error)
     return vendors
 
-# --- Revenue ledger ---
-
+# ----------------------
+# Ledger
+# ----------------------
 @app.get("/ledger")
 async def get_ledger(current_user: dict = Depends(get_current_active_user)):
     client = SqlClient()
-    # Admin + Internal: full ledger; Partner: only their vendor
     if current_user.get("role") in ("admin", "internal"):
         ledger, error = client.get_ledger()
     else:
