@@ -70,11 +70,11 @@ COLUMN_MAPPING = {
     "secondary_education": "secondary_education",
     "is_active": "is_active",
     "is_undersized": "is_undersized",
-    
+
     # Internal / Other
     "qbo_show_name": "show_name_in_qbo",
     "id": "id",
-    "annual_usd": "annual_usd"
+    "annual_usd": "annual_usd",
 }
 
 
@@ -134,13 +134,13 @@ def get_db_connection():
 class SqlClient:
     def __init__(self):
         self.verify_connection()
-    
+
     def verify_connection(self):
         success, error = test_database_connection()
         if not success:
             raise DatabaseConnectionError(f"Failed to initialize database client: {error}")
         print("Database connection verified successfully")
-    
+
     def _execute_query(self, query: str, params: tuple = None, fetch: str = None, is_transaction=False):
         try:
             with get_db_connection() as db:
@@ -164,7 +164,7 @@ class SqlClient:
         if error:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
             return []
-        
+
         for show in shows:
             annual_usd_raw = show.get('annual_usd')
             if isinstance(annual_usd_raw, str):
@@ -178,13 +178,11 @@ class SqlClient:
             show['revenue_2025'] = annual_usd.get('2025', 0)
         return shows
 
-    
-
     def get_podcast_by_id(self, show_id: str):
         sql = "SELECT * FROM shows WHERE id = %s"
         show, _, error = self._execute_query(sql, (show_id,), fetch='one')
         if error:
-            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): 
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
                 raise error
             return None, str(error)
         if not show:
@@ -203,7 +201,6 @@ class SqlClient:
         show['revenue_2024'] = annual_usd.get('2024', 0)
         show['revenue_2025'] = annual_usd.get('2025', 0)
         return show, None
-
 
     def filter_podcasts(self, filters: dict):
         query = "SELECT * FROM shows"
@@ -229,7 +226,7 @@ class SqlClient:
             delete_sql = "DELETE FROM users WHERE id = %s"
             _, rows_affected, error = self._execute_query(delete_sql, (user_id,), is_transaction=True)
             if error:
-                if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error  
+                if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
                 return False, str(error)
             if rows_affected == 0: return False, "User not found"
             return True, None
@@ -240,47 +237,40 @@ class SqlClient:
         try:
             print('in create function')
             print(show_data)
-           
+
             show_id = os.urandom(16).hex()
             show_dict = show_data.dict()
             show_dict['id'] = show_id
             show_dict.pop("annual_usd", None)
-           
-            # show_dict.pop("subnetwork_id", None)
-            # show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
- 
-            # show_dict["genre_name"] = show_dict.pop("genre_id")
+
             show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
             show_dict["tentpole"] = show_dict.pop("is_tentpole")
-            
 
             annual_usd_data = {
                 "2023": str(show_dict.pop("revenue_2023", None)),
                 "2024": str(show_dict.pop("revenue_2024", None)),
                 "2025": str(show_dict.pop("revenue_2025", None)),
             }
- 
+
             if any(value is not None for value in annual_usd_data.values()):
                 show_dict["annual_usd"] = json.dumps(annual_usd_data)
- 
+
             print(show_dict)
- 
+
             columns = ', '.join([f'`{k}`' for k in show_dict.keys()])
             placeholders = ', '.join(['%s'] * len(show_dict))
             sql = f"INSERT INTO shows ({columns}) VALUES ({placeholders})"
-            # sql=f"INSERT INTO shows (id,title) VALUES (1101,'test')"
             values = tuple(show_dict.values())
             print(sql, values)
-            # _, _, error = self._execute_query(sql, is_transaction=True)
- 
+
             _, _, error = self._execute_query(sql, values, is_transaction=True)
             if error:
-                return None, error            
+                return None, error
             fetch_sql = "SELECT * FROM shows WHERE id = %s"
             new_show, _, fetch_error = self._execute_query(fetch_sql, (show_id,), fetch='one')
             print('new show',new_show)
-           
+
             if 'annual_usd' in new_show and isinstance(new_show['annual_usd'], str):
                 try:
                     new_show['annual_usd'] = json.loads(new_show['annual_usd'])
@@ -295,11 +285,12 @@ class SqlClient:
             return new_show, None
         except Exception as e:
             print(e)
+
     def create_podcast(self, show_data):
         try:
             print('in create function')
             print(show_data)
-        
+
             show_id = os.urandom(16).hex()
             show_dict = show_data.dict()
             show_dict['id'] = show_id
@@ -361,7 +352,6 @@ class SqlClient:
         except Exception as e:
             print(e)
 
-
     def update_podcast(self, show_id: str, show_data: BaseModel):
         try:
             update_dict = show_data.model_dump(exclude_unset=True)
@@ -371,18 +361,13 @@ class SqlClient:
             for model_key, db_col in COLUMN_MAPPING.items():
                 if model_key in update_dict:
                     db_ready_dict[db_col] = update_dict[model_key]
-            print("update_dict",update_dict)
-            
-            # update_dict["show_type"] = update_dict.pop("showType")
+            print("update_dict", update_dict)
 
             if "revenue_2023" in update_dict or "revenue_2024" in update_dict or "revenue_2025" in update_dict:
                 existing_show, _ = self.get_podcast_by_id(show_id)
                 annual_usd_data = {}
                 if existing_show and isinstance(existing_show.get('annual_usd'), dict):
                     annual_usd_data = existing_show.get('annual_usd')
-                # annual_usd_data["2023"] = str(update_dict.get("revenue_2023", annual_usd_data.get("2023", 0)) or 0)
-                # annual_usd_data["2024"] = str(update_dict.get("revenue_2024", annual_usd_data.get("2024", 0)) or 0)
-                # annual_usd_data["2025"] = str(update_dict.get("revenue_2025", annual_usd_data.get("2025", 0)) or 0)
 
                 def _norm(v):
                     if v in (None, "None", "", "null", "NULL"):
@@ -396,7 +381,7 @@ class SqlClient:
                 r2024 = _norm(update_dict.pop("revenue_2024", None))
                 r2025 = _norm(update_dict.pop("revenue_2025", None))
 
-                annual_usd_data = {"2023": r2023, "2024": r2024, "2025": r2025}                
+                annual_usd_data = {"2023": r2023, "2024": r2024, "2025": r2025}
                 db_ready_dict["annual_usd"] = json.dumps(annual_usd_data)
 
             set_clause = ", ".join([f"`{key}` = %s" for key in db_ready_dict.keys()])
@@ -411,7 +396,7 @@ class SqlClient:
                 if existing:
                     return existing, None
                 return None, f"Podcast with id {show_id} not found"
-            
+
             return self.get_podcast_by_id(show_id)
         except Exception as e:
             print(f"Error updating podcast: {e}")
@@ -457,7 +442,8 @@ class SqlClient:
         return user, error
 
     def get_split_shows_for_user(self, user: dict):
-        if user.get('role') == 'admin':
+        # Allow admin and internal to view the full list; partners get their own only
+        if user.get('role') in ('admin', 'internal'):
             sql = "SELECT DISTINCT show_name, show_qbo_id FROM split_history WHERE show_name IS NOT NULL AND show_qbo_id IS NOT NULL"
             params = None
         elif user.get('role') == 'partner' and user.get('mapped_vendor_qbo_id'):
@@ -516,8 +502,7 @@ class SqlClient:
             return None, str(e)
         except Exception as e:
             return None, str(e)
-   
-    
+
     def get_catalog_all_shows(self):
         """Return all shows from allclass for independent mapping dropdowns."""
         sql = """
@@ -563,8 +548,7 @@ class SqlClient:
         if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
             raise error
         return ledger, error
- 
-   
+
     def get_partner_payouts(self, partner_id: str = None):
         if partner_id:
             sql = "SELECT * FROM ledger_partnerpayouts WHERE vendor_qbo_id = %s"
@@ -572,9 +556,9 @@ class SqlClient:
         else:
             sql = "SELECT * FROM ledger_partnerpayouts"
             params = None
- 
+
         ledger, _, error = self._execute_query(sql, params, fetch='all')
- 
+
         if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
             raise error
         return ledger, error

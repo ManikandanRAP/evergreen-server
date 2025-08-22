@@ -117,6 +117,7 @@ class ShowType(str, Enum):
 class Role(str, Enum):
     admin = 'admin'
     partner = 'partner'
+    internal = 'internal'
 
 class GenreName(str, Enum):
     History = 'History'
