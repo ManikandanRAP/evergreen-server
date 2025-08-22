@@ -406,6 +406,17 @@ def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_us
         raise HTTPException(status_code=500, detail=error)
     return new_split
 
+# NEW: delete a split (admin only)
+@app.delete("/split-management/splits/{split_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_split(split_id: int, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    ok, err = client.delete_split(split_id)
+    if not ok:
+        if err and "not found" in err.lower():
+            raise HTTPException(status_code=404, detail=err)
+        raise HTTPException(status_code=500, detail=err or "Failed to delete split")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 # ----------------------
 # Catalog for mapping (admin only)
 # ----------------------

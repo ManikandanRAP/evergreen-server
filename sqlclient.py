@@ -527,6 +527,18 @@ class SqlClient:
         except Exception as e:
             return None, str(e)
 
+    # NEW: delete split by split_id
+    def delete_split(self, split_id: int):
+        sql = "DELETE FROM split_history WHERE split_id = %s"
+        _, rows_affected, error = self._execute_query(sql, (split_id,), is_transaction=True)
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return False, str(error)
+        if rows_affected == 0:
+            return False, "Split not found"
+        return True, None
+
     def get_catalog_all_shows(self):
         """Return all shows from allclass for independent mapping dropdowns."""
         sql = """
