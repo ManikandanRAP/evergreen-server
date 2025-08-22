@@ -365,6 +365,12 @@ def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     if not success:
         raise HTTPException(status_code=404, detail=error)
 
+@app.get("/vendors")
+def get_vendors(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    vendors = client.get_all_vendors()
+    return vendors
+
 # ----------------------
 # Split management (reads allowed for all logged-in roles, writes admin-only)
 # ----------------------
