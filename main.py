@@ -27,6 +27,8 @@ from models import (
     PodcastIn,
     UserListItem,
     UserUpdate,
+    FeedbackCreate, # Import Feedback models
+    Feedback,
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
@@ -249,6 +251,44 @@ def delete_user(user_id: str, admin: User = Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail=error or "Failed to delete user")
     # 204 No Content
     return Response(status_code=204)
+
+# ----------------------
+# Feedbacks
+# ----------------------
+@app.post("/feedbacks", response_model=Feedback, status_code=status.HTTP_201_CREATED)
+def create_feedback(
+    feedback_data: FeedbackCreate,
+    current_user: User = Depends(get_current_active_user)
+):
+    client = SqlClient()
+    user_id = current_user.get("id")
+    # Unpack the tuple returned by the client
+    new_feedback, error = client.create_feedback(feedback_data, user_id)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    # Return only the data, not the tuple
+    return new_feedback
+
+@app.get("/feedbacks", response_model=List[Feedback])
+def get_all_feedbacks(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    # Unpack the tuple returned by the client
+    feedbacks, error = client.get_all_feedbacks()
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    # Return only the data, not the tuple
+    return feedbacks
+
+@app.delete("/feedbacks/{feedback_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_feedback(feedback_id: str, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    success, error = client.delete_feedback(feedback_id)
+    if not success:
+        if "not found" in str(error).lower():
+            raise HTTPException(status_code=404, detail=error)
+        raise HTTPException(status_code=500, detail=error or "Failed to delete feedback")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 # ----------------------
 # Shows (READ: admin+internal; WRITE: admin)

@@ -9,6 +9,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT
 from utils.date_normalizer import *
+from models import FeedbackCreate # Import FeedbackCreate
+import uuid
+from datetime import datetime, timezone
+
 
 # This dictionary provides a definitive, complete mapping from the Python
 # model's field names (snake_case) to the actual database column names.
@@ -542,7 +546,7 @@ class SqlClient:
     def get_catalog_all_shows(self):
         """Return all shows from allclass for independent mapping dropdowns."""
         sql = """
-            SELECT 
+            SELECT
                 id AS show_qbo_id,
                 name AS show_name
             FROM allclass
@@ -559,7 +563,7 @@ class SqlClient:
     def get_catalog_all_vendors(self):
         """Return all vendors from allvendors for independent mapping dropdowns."""
         sql = """
-            SELECT 
+            SELECT
                 id AS vendor_qbo_id,
                 displayname AS vendor_name
             FROM allvendors
@@ -598,3 +602,62 @@ class SqlClient:
         if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
             raise error
         return ledger, error
+
+    # ===== NEW (additions for feedback feature) =====
+
+    def create_feedback(self, feedback_data: FeedbackCreate, user_id: str):
+        feedback_id = str(uuid.uuid4())
+        created_time = datetime.now(timezone.utc)
+
+        sql = """
+        INSERT INTO feedback (id, title, type, description, created_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        params = (
+            feedback_id,
+            feedback_data.title,
+            feedback_data.type.value,
+            feedback_data.description,
+            user_id,
+            created_time
+        )
+        _, _, error = self._execute_query(sql, params, is_transaction=True)
+        if error:
+            return None, str(error)
+
+        # Fetch the newly created feedback to return it
+        new_feedback, err = self.get_feedback_by_id(feedback_id)
+        return new_feedback, err
+
+    def get_feedback_by_id(self, feedback_id: str):
+        sql = """
+        SELECT f.*, u.name as createdByName
+        FROM feedback f
+        JOIN users u ON f.created_by = u.id
+        WHERE f.id = %s
+        """
+        feedback_row, _, error = self._execute_query(sql, (feedback_id,), fetch='one')
+        if error:
+            return None, str(error)
+        return feedback_row, None
+
+    def get_all_feedbacks(self):
+        sql = """
+        SELECT f.*, u.name as createdByName
+        FROM feedback f
+        JOIN users u ON f.created_by = u.id
+        ORDER BY f.created_at DESC
+        """
+        feedbacks, _, error = self._execute_query(sql, fetch='all')
+        if error:
+            return [], str(error)
+        return feedbacks, None
+
+    def delete_feedback(self, feedback_id: str):
+        sql = "DELETE FROM feedback WHERE id = %s"
+        _, rows_affected, error = self._execute_query(sql, (feedback_id,), is_transaction=True)
+        if error:
+            return False, str(error)
+        if rows_affected == 0:
+            return False, "Feedback not found"
+        return True, None

@@ -551,3 +551,23 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     password: Optional[str] = None  # will be hashed server-side if provided
     mapped_vendor_qbo_id: Optional[int] = None
+
+# ===== NEW (additions for feedback feature) =====
+
+class FeedbackType(str, Enum):
+    new_feature = "New Feature"
+    general_feedback = "General Feedback"
+
+class FeedbackCreate(BaseModel):
+    title: constr(min_length=1, max_length=100)
+    type: FeedbackType
+    description: constr(min_length=10, max_length=1000)
+
+class Feedback(BaseModel):
+    id: str
+    title: str
+    type: FeedbackType
+    description: str
+    created_by: str
+    created_at: datetime
+    createdByName: str
