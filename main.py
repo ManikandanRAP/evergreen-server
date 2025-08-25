@@ -2,7 +2,7 @@ import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from datetime import datetime, timezone
 import uuid
 
@@ -410,6 +410,14 @@ def get_vendors(admin: User = Depends(get_admin_user)):
     client = SqlClient()
     vendors = client.get_all_vendors()
     return vendors
+
+@app.get("/qbo/allclass")
+def list_allclass(admin: User = Depends(get_admin_user)) -> List[Dict[str, Any]]:
+    client = SqlClient()
+    items, err = client.get_allclass_items()
+    if err:
+        raise HTTPException(status_code=500, detail=str(err))
+    return items
 
 # ----------------------
 # Split management (reads allowed for all logged-in roles, writes admin-only)

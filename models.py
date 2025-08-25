@@ -204,7 +204,6 @@ class ShowCreate(BaseModel):
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
     start_date: Optional[date] = None
-    show_name_in_qbo: Optional[str] = None
     side_bonus_percent: Optional[float] = None
     youtube_ads_percent: Optional[float] = None
     subscriptions_percent: Optional[float] = None
@@ -232,6 +231,8 @@ class ShowCreate(BaseModel):
     secondary_education: Optional[str] = None
     is_undersized: Optional[bool] = False
     is_active: Optional[bool] = True
+    qbo_show_id: Optional[int] = None
+    qbo_show_name: Optional[str] = None
 
     # --- Case/space-insensitive normalizers for CSV import ---
 
@@ -323,8 +324,7 @@ class Show(BaseModel):
     latest_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
-    start_date: Optional[date] = None       
-    show_name_in_qbo: Optional[str] = None
+    start_date: Optional[date] = None
     side_bonus_percent: Optional[float] = None
     youtube_ads_percent: Optional[float] = None
     subscriptions_percent: Optional[float] = None
@@ -352,6 +352,8 @@ class Show(BaseModel):
     secondary_education:Optional[str] = None
     is_undersized: Optional[bool] = None
     is_active: Optional[bool] = None
+    qbo_show_id: Optional[int] = None
+    qbo_show_name: Optional[str] = None
 
 
 class Subnetwork(BaseModel):
@@ -389,7 +391,6 @@ class ShowUpdate(BaseModel):
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
     start_date: Optional[date] = None
-    show_name_in_qbo: Optional[str] = None
     side_bonus_percent: Optional[float] = None
     youtube_ads_percent: Optional[float] = None
     subscriptions_percent: Optional[float] = None
@@ -417,6 +418,8 @@ class ShowUpdate(BaseModel):
     primary_education: Optional[str] = None
     secondary_education: Optional[str] = None
     region: Optional[str] = None
+    qbo_show_id: Optional[int] = None
+    qbo_show_name: Optional[str] = None
         
     # --- Case/space-insensitive normalizers for CSV import ---
 

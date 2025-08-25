@@ -76,7 +76,8 @@ COLUMN_MAPPING = {
     "is_undersized": "is_undersized",
 
     # Internal / Other
-    "qbo_show_name": "show_name_in_qbo",
+    "qbo_show_id": "qbo_show_id",
+    "qbo_show_name": "qbo_show_name",
     "id": "id",
     "annual_usd": "annual_usd",
 }
@@ -247,7 +248,6 @@ class SqlClient:
             show_dict['id'] = show_id
             show_dict.pop("annual_usd", None)
 
-            show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
             show_dict["tentpole"] = show_dict.pop("is_tentpole")
 
@@ -300,7 +300,6 @@ class SqlClient:
             show_dict['id'] = show_id
             show_dict.pop("annual_usd", None)
 
-            show_dict["qbo_show_name"] = show_dict.pop("show_name_in_qbo")
             show_dict["tentpole"] = show_dict.pop("is_tentpole")
 
             show_dict["start_date"] = normalize_mysql_date(show_dict["start_date"])
@@ -661,3 +660,12 @@ class SqlClient:
         if rows_affected == 0:
             return False, "Feedback not found"
         return True, None
+
+    def get_allclass_items(self):
+        sql = "SELECT id, name FROM allclass ORDER BY name ASC"
+        results, _, error = self._execute_query(sql, fetch="all")
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return None, error
+        return results or [], None
