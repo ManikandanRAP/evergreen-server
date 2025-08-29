@@ -38,9 +38,9 @@ app = FastAPI(
     title="Evergreen Podcasts API",
     description="API for managing podcasts and partners with JWT authentication.",
     version="2.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 app.add_middleware(
