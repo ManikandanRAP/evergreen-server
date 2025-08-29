@@ -1,0 +1,41 @@
+version: '3.8'
+services:
+  db:
+    image: mysql:8.0
+    container_name: evergreen-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=evergreen
+      - MYSQL_USER=mycouser
+      - MYSQL_PASSWORD=mycopassword
+    ports:
+      - "3306:3306"  # External access on port 3307
+    volumes:
+      # The MySQL data will be stored in a 'db_data' directory outside the project folder.
+      - /home/db_data:/var/lib/mysql
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
+  backend:
+    build: .
+    container_name: evergreen-server-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=rootpassword
+      - DB_NAME=evergreen
+      - DB_PORT=3306
+      - SECRET_KEY=a56355d68f0a1b04226cfae1768177aec80bf730faec8092b87af36d79791524
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    # Add these for debugging
+    stdin_open: true
+    tty: true
+
+networks:
+  evergreen_net:
+    driver: bridge
