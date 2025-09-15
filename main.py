@@ -29,6 +29,7 @@ from models import (
     UserUpdate,
     FeedbackCreate, # Import Feedback models
     Feedback,
+    BaseModel,
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
@@ -334,6 +335,144 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
         "errors": errors,
     }
 
+@app.post("/podcasts/check-duplicates")
+def check_duplicates(shows_data: List[ShowCreate], admin: User = Depends(get_admin_user)):
+    """Check for duplicate show titles before import"""
+    client = SqlClient()
+    
+    # Extract titles from the shows data
+    titles = [show.title for show in shows_data if show.title and show.title.strip()]
+    
+    if not titles:
+        return {"duplicates": [], "message": "No valid titles to check"}
+    
+    # Check for existing shows with these titles
+    existing_shows, error = client.check_duplicate_shows_bulk(titles)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    
+    # Create a mapping of existing shows by title (case-insensitive)
+    existing_by_title = {}
+    for show in existing_shows:
+        existing_by_title[show['title'].lower()] = show
+    
+    # Build response with duplicate information
+    duplicates = []
+    for show_data in shows_data:
+        if show_data.title and show_data.title.strip():
+            title_lower = show_data.title.lower()
+            if title_lower in existing_by_title:
+                duplicates.append({
+                    "title": show_data.title,
+                    "exists": True,
+                    "existing_show": existing_by_title[title_lower]
+                })
+            else:
+                duplicates.append({
+                    "title": show_data.title,
+                    "exists": False,
+                    "existing_show": None
+                })
+    
+    return {
+        "duplicates": duplicates,
+        "total_checked": len(duplicates),
+        "duplicates_found": len([d for d in duplicates if d["exists"]]),
+        "message": f"Found {len([d for d in duplicates if d['exists']])} duplicate(s) out of {len(duplicates)} shows"
+    }
+
+@app.post("/podcasts/check-duplicate")
+def check_single_duplicate(show_data: ShowCreate, current_user: User = Depends(get_current_active_user)):
+    """Check for duplicate show title for real-time validation"""
+    client = SqlClient()
+    
+    if not show_data.title or not show_data.title.strip():
+        return {"exists": False, "existing_show": None}
+    
+    # Check for existing show with this title
+    existing_show, error = client.check_duplicate_show(show_data.title)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    
+    return {
+        "exists": existing_show is not None,
+        "existing_show": existing_show
+    }
+
+@app.post("/podcasts/bulk-import-with-actions")
+def bulk_create_podcasts_with_actions(
+    shows_data: List[ShowCreate], 
+    actions: List[dict],  # [{"title": "Show Name", "action": "create|update|skip"}]
+    admin: User = Depends(get_admin_user)
+):
+    """Bulk import with user-specified actions for duplicates"""
+    client = SqlClient()
+    
+    # Create a mapping of actions by title
+    action_map = {action["title"]: action["action"] for action in actions}
+    
+    successful_imports = 0
+    failed_imports = 0
+    updated_imports = 0
+    skipped_imports = 0
+    errors = []
+    
+    for i, show_data in enumerate(shows_data):
+        if not show_data.title or not show_data.title.strip():
+            failed_imports += 1
+            errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
+            continue
+        
+        action = action_map.get(show_data.title, "create")
+        
+        if action == "skip":
+            skipped_imports += 1
+            continue
+        
+        if action == "update":
+            # Check if show exists for update
+            existing_show, error = client.check_duplicate_show(show_data.title)
+            if error:
+                failed_imports += 1
+                errors.append(f"Row {i + 2} ('{show_data.title}'): Error checking for existing show - {str(error)}")
+                continue
+            
+            if not existing_show:
+                failed_imports += 1
+                errors.append(f"Row {i + 2} ('{show_data.title}'): Show not found for update")
+                continue
+            
+            # Update existing show
+            updated_show, error = client.update_podcast(existing_show['id'], show_data)
+            if error:
+                failed_imports += 1
+                errors.append(f"Row {i + 2} ('{show_data.title}'): Update failed - {str(error)}")
+            else:
+                updated_imports += 1
+        
+        elif action == "create":
+            # Create new show (with duplicate check)
+            new_show, error = client.create_podcast(show_data)
+            if error:
+                failed_imports += 1
+                errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
+            else:
+                successful_imports += 1
+    
+    total_processed = successful_imports + updated_imports + skipped_imports + failed_imports
+    
+    message = f"Bulk import completed. Created: {successful_imports}, Updated: {updated_imports}, Skipped: {skipped_imports}, Failed: {failed_imports}"
+    
+    return {
+        "message": message,
+        "total": len(shows_data),
+        "successful": successful_imports,
+        "updated": updated_imports,
+        "skipped": skipped_imports,
+        "failed": failed_imports,
+        "errors": errors,
+    }
+
 class ShowFilterParams:
     def __init__(
         self,
@@ -400,6 +539,26 @@ def update_podcast(show_id: str, show_data: ShowUpdate, admin: User = Depends(ge
             raise HTTPException(status_code=400, detail=str(error))
         raise HTTPException(status_code=404, detail=str(error))
     return updated_show
+
+class BulkDeleteRequest(BaseModel):
+    show_ids: List[str]
+
+@app.delete("/podcasts/bulk-delete", status_code=status.HTTP_200_OK)
+def bulk_delete_podcasts(request: BulkDeleteRequest, admin: User = Depends(get_admin_user)):
+    """Bulk delete multiple shows by their IDs"""
+    if not request.show_ids:
+        raise HTTPException(status_code=400, detail="No show IDs provided")
+    
+    client = SqlClient()
+    results = client.bulk_delete_podcasts(request.show_ids)
+    
+    return {
+        "message": f"Successfully deleted {results['successful']} shows",
+        "total_requested": len(request.show_ids),
+        "successful": results['successful'],
+        "failed": results['failed'],
+        "errors": results['errors']
+    }
 
 @app.delete("/podcasts/{show_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):

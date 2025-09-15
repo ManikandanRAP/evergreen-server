@@ -290,10 +290,53 @@ class SqlClient:
         except Exception as e:
             print(e)
 
+    def check_duplicate_show(self, title: str, exclude_id: str = None):
+        """Check if a show with the given title already exists (case-insensitive)"""
+        try:
+            if exclude_id:
+                sql = "SELECT * FROM shows WHERE LOWER(title) = LOWER(%s) AND id != %s"
+                params = (title, exclude_id)
+            else:
+                sql = "SELECT * FROM shows WHERE LOWER(title) = LOWER(%s)"
+                params = (title,)
+            
+            existing_show, _, error = self._execute_query(sql, params, fetch='one')
+            if error:
+                return None, error
+            
+            return existing_show, None
+        except Exception as e:
+            return None, str(e)
+
+    def check_duplicate_shows_bulk(self, show_titles: list):
+        """Check multiple show titles for duplicates in one query"""
+        try:
+            if not show_titles:
+                return [], None
+            
+            # Create placeholders for the IN clause
+            placeholders = ', '.join(['LOWER(%s)'] * len(show_titles))
+            sql = f"SELECT * FROM shows WHERE LOWER(title) IN ({placeholders})"
+            
+            existing_shows, _, error = self._execute_query(sql, show_titles, fetch='all')
+            if error:
+                return None, error
+            
+            return existing_shows, None
+        except Exception as e:
+            return None, str(e)
+
     def create_podcast(self, show_data):
         try:
             print('in create function')
             print(show_data)
+
+            # Check for duplicate before creating
+            existing_show, error = self.check_duplicate_show(show_data.title)
+            if error:
+                return None, error
+            if existing_show:
+                return None, f"Show with title '{show_data.title}' already exists"
 
             show_id = os.urandom(16).hex()
             show_dict = show_data.dict()
@@ -414,6 +457,38 @@ class SqlClient:
             return True, None
         except (DatabaseConnectionError, DatabaseCredentialsError):
             raise
+
+    def bulk_delete_podcasts(self, show_ids: list):
+        """Bulk delete multiple shows by their IDs"""
+        try:
+            if not show_ids:
+                return {"successful": 0, "failed": 0, "errors": []}
+            
+            # Create placeholders for the IN clause
+            placeholders = ', '.join(['%s'] * len(show_ids))
+            sql = f"DELETE FROM shows WHERE id IN ({placeholders})"
+            
+            # Execute the bulk delete
+            _, rows_affected, error = self._execute_query(sql, tuple(show_ids), is_transaction=True)
+            
+            if error:
+                return {
+                    "successful": 0,
+                    "failed": len(show_ids),
+                    "errors": [str(error)]
+                }
+            
+            return {
+                "successful": rows_affected,
+                "failed": len(show_ids) - rows_affected,
+                "errors": []
+            }
+        except Exception as e:
+            return {
+                "successful": 0,
+                "failed": len(show_ids),
+                "errors": [str(e)]
+            }
 
     def get_all_vendors(self):
         sql = "SELECT DISTINCT vendor_name, vendor_qbo_id FROM split_history WHERE vendor_name IS NOT NULL AND vendor_qbo_id IS NOT NULL"
