@@ -30,6 +30,8 @@ from models import (
     FeedbackCreate, # Import Feedback models
     Feedback,
     BaseModel,
+    UsernameCheckRequest,
+    UsernameCheckResponse,
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
@@ -105,6 +107,20 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 @app.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
     return current_user
+
+@app.post("/users/check-username", response_model=UsernameCheckResponse)
+async def check_username_availability(request: UsernameCheckRequest, current_user: User = Depends(get_current_active_user)):
+    """Check if a username (email) is available for registration"""
+    client = SqlClient()
+    existing_user, error = client.get_user_by_email(request.username)
+    
+    if error:
+        raise HTTPException(status_code=500, detail="Database error occurred while checking username availability")
+    
+    # If user exists, username is not available
+    available = existing_user is None
+    
+    return UsernameCheckResponse(available=available)
 
 # ----------------------
 # Users (admin only)

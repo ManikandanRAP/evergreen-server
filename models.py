@@ -574,3 +574,11 @@ class Feedback(BaseModel):
     created_by: str
     created_at: datetime
     createdByName: str
+
+# ===== NEW (additions for username availability check) =====
+
+class UsernameCheckRequest(BaseModel):
+    username: EmailStr
+
+class UsernameCheckResponse(BaseModel):
+    available: bool
