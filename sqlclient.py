@@ -25,9 +25,10 @@ COLUMN_MAPPING = {
     "relationship_level": "relationship_level",
     "start_date": "start_date",
     "subnetwork_id": "subnetwork_id",
-    "is_tentpole": "tentpole",
+    "is_rate_card": "rate_card",
     "is_original": "is_original",
     "genre_name": "genre_name",
+    "ranking_category": "ranking_category",
 
     # Financial
     "minimum_guarantee": "minimum_guarantee",
@@ -59,7 +60,7 @@ COLUMN_MAPPING = {
     "subscription_hands_off_percent": "subscription_hands_off_percent",
 
     # Content Details
-    "shows_per_year": "shows_per_year",
+    "cadence": "cadence",
     "ad_slots": "ad_slots",
     "avg_show_length_mins": "avg_show_length_mins",
     "show_host_contact": "show_host_contact",
@@ -249,7 +250,7 @@ class SqlClient:
             show_dict.pop("annual_usd", None)
 
             show_dict["subnetwork_name"] = show_dict.pop("subnetwork_id")
-            show_dict["tentpole"] = show_dict.pop("is_tentpole")
+            show_dict["rate_card"] = show_dict.pop("is_rate_card")
 
             annual_usd_data = {
                 "2023": str(show_dict.pop("revenue_2023", None)),
@@ -343,7 +344,7 @@ class SqlClient:
             show_dict['id'] = show_id
             show_dict.pop("annual_usd", None)
 
-            show_dict["tentpole"] = show_dict.pop("is_tentpole")
+            show_dict["rate_card"] = show_dict.pop("is_rate_card")
 
             show_dict["start_date"] = normalize_mysql_date(show_dict["start_date"])
 
@@ -653,10 +654,41 @@ class SqlClient:
 
     def get_ledger(self, partner_id: str = None):
         if partner_id:
-            sql = "SELECT * FROM revenue_ledger WHERE vendor_qbo_id = %s"
+            sql = """
+            SELECT 
+                invoice_classref_name as show_name,
+                customer_invoice as customer,
+                invoice_date,
+                invoice_description,
+                invoice_amount,
+                evergreen_percentage,
+                partner_percentage,
+                evergreen_compensation,
+                partner_compensation,
+                tot_payment_amounts as effective_payment_received,
+                outstanding_balance,
+                partner_comp_waiting
+            FROM revenue_ledger 
+            WHERE vendor_qbo_id = %s
+            """
             params = (partner_id,)
         else:
-            sql = "SELECT * FROM revenue_ledger"
+            sql = """
+            SELECT 
+                invoice_classref_name as show_name,
+                customer_invoice as customer,
+                invoice_date,
+                invoice_description,
+                invoice_amount,
+                evergreen_percentage,
+                partner_percentage,
+                evergreen_compensation,
+                partner_compensation,
+                tot_payment_amounts as effective_payment_received,
+                outstanding_balance,
+                partner_comp_waiting
+            FROM revenue_ledger
+            """
             params = None
         ledger, _, error = self._execute_query(sql, params, fetch='all')
         if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
@@ -665,10 +697,35 @@ class SqlClient:
 
     def get_partner_payouts(self, partner_id: str = None):
         if partner_id:
-            sql = "SELECT * FROM ledger_partnerpayouts WHERE vendor_qbo_id = %s"
+            sql = """
+            SELECT 
+                docnumber as bill_number,
+                txndate as bill_date,
+                vendor_qbo_name as partner_name,
+                bill_amount,
+                txnids_Payment as payment_id,
+                date_of_payment,
+                effective_billed_amount_paid,
+                billed_amount_outstanding,
+                show_qbo_name as show_name
+            FROM ledger_partnerpayouts 
+            WHERE vendor_qbo_id = %s
+            """
             params = (partner_id,)
         else:
-            sql = "SELECT * FROM ledger_partnerpayouts"
+            sql = """
+            SELECT 
+                docnumber as bill_number,
+                txndate as bill_date,
+                vendor_qbo_name as partner_name,
+                bill_amount,
+                txnids_Payment as payment_id,
+                date_of_payment,
+                effective_billed_amount_paid,
+                billed_amount_outstanding,
+                show_qbo_name as show_name
+            FROM ledger_partnerpayouts
+            """
             params = None
 
         ledger, _, error = self._execute_query(sql, params, fetch='all')
@@ -676,6 +733,58 @@ class SqlClient:
         if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
             raise error
         return ledger, error
+
+    def get_revenue_ledger_stats(self, partner_id: str = None):
+        """Get top stats for revenue ledger page"""
+        if partner_id:
+            sql = """
+            SELECT 
+                SUM(effective_billed_amount_paid) as total_effective_billed_paid,
+                SUM(billed_amount_outstanding) as total_billed_outstanding,
+                SUM(partner_comp_waiting) as total_comp_waiting
+            FROM (
+                SELECT 
+                    COALESCE(effective_billed_amount_paid, 0) as effective_billed_amount_paid,
+                    COALESCE(billed_amount_outstanding, 0) as billed_amount_outstanding,
+                    0 as partner_comp_waiting
+                FROM ledger_partnerpayouts 
+                WHERE vendor_qbo_id = %s
+                UNION ALL
+                SELECT 
+                    0 as effective_billed_amount_paid,
+                    0 as billed_amount_outstanding,
+                    COALESCE(partner_comp_waiting, 0) as partner_comp_waiting
+                FROM revenue_ledger 
+                WHERE vendor_qbo_id = %s
+            ) combined_stats
+            """
+            params = (partner_id, partner_id)
+        else:
+            sql = """
+            SELECT 
+                SUM(effective_billed_amount_paid) as total_effective_billed_paid,
+                SUM(billed_amount_outstanding) as total_billed_outstanding,
+                SUM(partner_comp_waiting) as total_comp_waiting
+            FROM (
+                SELECT 
+                    COALESCE(effective_billed_amount_paid, 0) as effective_billed_amount_paid,
+                    COALESCE(billed_amount_outstanding, 0) as billed_amount_outstanding,
+                    0 as partner_comp_waiting
+                FROM ledger_partnerpayouts
+                UNION ALL
+                SELECT 
+                    0 as effective_billed_amount_paid,
+                    0 as billed_amount_outstanding,
+                    COALESCE(partner_comp_waiting, 0) as partner_comp_waiting
+                FROM revenue_ledger
+            ) combined_stats
+            """
+            params = None
+
+        stats, _, error = self._execute_query(sql, params, fetch='one')
+        if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+            raise error
+        return stats, error
 
     # ===== NEW (additions for feedback feature) =====
 

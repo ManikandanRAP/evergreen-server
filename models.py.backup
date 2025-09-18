@@ -567,7 +567,6 @@ class PodcastIn(BaseModel):
     show_type: str
     media_type: str
     relationship_level: str
-    ranking_category: Optional[str] = None
     start_date: Optional[str] = None
     minimum_guarantee: Optional[bool] = None
     evergreen_ownership_pct: Optional[float] = None
@@ -588,15 +587,6 @@ class PodcastIn(BaseModel):
     has_branded_revenue: Optional[bool] = None
     has_marketing_revenue: Optional[bool] = None
     has_web_mgmt_revenue: Optional[bool] = None
-
-    @field_validator("ranking_category", mode="before")
-    def _v_ranking_category(cls, v):
-        if v in (None, ""):
-            return None
-        key = _norm_key(v)
-        if key in RANKING_CATEGORY_MAP:
-            return RANKING_CATEGORY_MAP[key]
-        raise ValueError("Invalid value for 'ranking_category'. Must be one of: 1, 2, 3, 4, 5.")
 
     @field_validator("start_date", mode="before")
     @classmethod

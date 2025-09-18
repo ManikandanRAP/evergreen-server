@@ -67,7 +67,7 @@ def main():
         run_test("View All Podcasts", session.get, f"{BASE_URL}/podcasts")
 
         # 4. Update Podcast (Admin)
-        update_data = {"tentpole": True}
+        update_data = {"rate_card": True}
         run_test("Update Podcast", session.put, f"{BASE_URL}/podcasts/{created_podcast_id}", json=update_data)
 
         # 5. Filter for the created podcast
@@ -114,7 +114,7 @@ def main():
                     "media_type": deleted_podcast_data.get("media_type"),
                     "show_type": deleted_podcast_data.get("show_type"),
                     "relationship_level": deleted_podcast_data.get("relationship_level"),
-                    "tentpole": deleted_podcast_data.get("tentpole"),
+                    "rate_card": deleted_podcast_data.get("rate_card"),
                 }
                 run_test("Recreate Deleted Podcast", session.post, f"{BASE_URL}/podcasts", json=recreate_data)
             
