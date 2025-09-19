@@ -707,6 +707,39 @@ async def get_partners_payouts(current_user: dict = Depends(get_current_active_u
         raise HTTPException(status_code=500, detail=str(error))
     return partners_payouts
 
+@app.get("/debug/partner_payouts")
+async def debug_partner_payouts(current_user: dict = Depends(get_current_active_user)):
+    """Debug endpoint to help diagnose partner payouts issues"""
+    client = SqlClient()
+    
+    # Get the raw data
+    if current_user.get("role") in ("admin", "internal"):
+        partners_payouts, error = client.get_partner_payouts()
+    else:
+        partners_payouts, error = client.get_partner_payouts(current_user.get("mapped_vendor_qbo_id"))
+    
+    if error:
+        return {"error": str(error), "data": None}
+    
+    # Calculate debug statistics
+    total_records = len(partners_payouts) if partners_payouts else 0
+    total_effective_paid = sum(float(p.get('effective_billed_amount_paid', 0) or 0) for p in partners_payouts) if partners_payouts else 0
+    non_null_paid = sum(1 for p in partners_payouts if p.get('effective_billed_amount_paid') is not None and p.get('effective_billed_amount_paid') != 0) if partners_payouts else 0
+    
+    return {
+        "user_info": {
+            "role": current_user.get("role"),
+            "mapped_vendor_qbo_id": current_user.get("mapped_vendor_qbo_id")
+        },
+        "statistics": {
+            "total_records": total_records,
+            "total_effective_paid": total_effective_paid,
+            "non_null_paid_records": non_null_paid,
+            "sample_records": partners_payouts[:3] if partners_payouts else []
+        },
+        "raw_data": partners_payouts
+    }
+
 
 
 if __name__ == "__main__":
