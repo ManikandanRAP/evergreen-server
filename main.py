@@ -643,6 +643,26 @@ def delete_split(split_id: int, admin: User = Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail=err or "Failed to delete split")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+# NEW: get all split history (admin only)
+@app.get("/split-management/split-history")
+def get_all_split_history(admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    splits, error = client.get_all_split_history()
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return splits
+
+# NEW: update a split (admin only)
+@app.put("/split-management/splits/{split_id}")
+def update_split(split_id: int, split_data: SplitCreate, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    updated_split, error = client.update_split(split_id, split_data)
+    if error:
+        if "not found" in error.lower():
+            raise HTTPException(status_code=404, detail=error)
+        raise HTTPException(status_code=500, detail=error)
+    return updated_split
+
 # ----------------------
 # Catalog for mapping (admin only)
 # ----------------------

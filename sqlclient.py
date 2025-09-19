@@ -618,6 +618,44 @@ class SqlClient:
             return False, "Split not found"
         return True, None
 
+    def get_all_split_history(self):
+        """Get all split history records for admin view."""
+        sql = "SELECT * FROM split_history ORDER BY split_id DESC"
+        splits, _, error = self._execute_query(sql, (), fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return None, str(error)
+        return splits, None
+
+    def update_split(self, split_id: int, split_data):
+        """Update an existing split record."""
+        sql = """
+        UPDATE split_history 
+        SET evergreen_pct_ads = %s, 
+            evergreen_pct_programmatic = %s, 
+            effective_date = %s
+        WHERE split_id = %s
+        """
+        _, rows_affected, error = self._execute_query(
+            sql, 
+            (split_data.evergreen_pct_ads, split_data.evergreen_pct_programmatic, split_data.effective_date, split_id), 
+            is_transaction=True
+        )
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return None, str(error)
+        if rows_affected == 0:
+            return None, "Split not found"
+        
+        # Return the updated split
+        select_sql = "SELECT * FROM split_history WHERE split_id = %s"
+        updated_split, _, select_error = self._execute_query(select_sql, (split_id,), fetch='one')
+        if select_error:
+            return None, str(select_error)
+        return updated_split, None
+
     def get_catalog_all_shows(self):
         """Return all shows from allclass for independent mapping dropdowns."""
         sql = """
