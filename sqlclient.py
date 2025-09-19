@@ -772,57 +772,6 @@ class SqlClient:
             raise error
         return ledger, error
 
-    def get_revenue_ledger_stats(self, partner_id: str = None):
-        """Get top stats for revenue ledger page"""
-        if partner_id:
-            sql = """
-            SELECT 
-                SUM(effective_billed_amount_paid) as total_effective_billed_paid,
-                SUM(billed_amount_outstanding) as total_billed_outstanding,
-                SUM(partner_comp_waiting) as total_comp_waiting
-            FROM (
-                SELECT 
-                    COALESCE(effective_billed_amount_paid, 0) as effective_billed_amount_paid,
-                    COALESCE(billed_amount_outstanding, 0) as billed_amount_outstanding,
-                    0 as partner_comp_waiting
-                FROM ledger_partnerpayouts 
-                WHERE vendor_qbo_id = %s
-                UNION ALL
-                SELECT 
-                    0 as effective_billed_amount_paid,
-                    0 as billed_amount_outstanding,
-                    COALESCE(partner_comp_waiting, 0) as partner_comp_waiting
-                FROM revenue_ledger 
-                WHERE vendor_qbo_id = %s
-            ) combined_stats
-            """
-            params = (partner_id, partner_id)
-        else:
-            sql = """
-            SELECT 
-                SUM(effective_billed_amount_paid) as total_effective_billed_paid,
-                SUM(billed_amount_outstanding) as total_billed_outstanding,
-                SUM(partner_comp_waiting) as total_comp_waiting
-            FROM (
-                SELECT 
-                    COALESCE(effective_billed_amount_paid, 0) as effective_billed_amount_paid,
-                    COALESCE(billed_amount_outstanding, 0) as billed_amount_outstanding,
-                    0 as partner_comp_waiting
-                FROM ledger_partnerpayouts
-                UNION ALL
-                SELECT 
-                    0 as effective_billed_amount_paid,
-                    0 as billed_amount_outstanding,
-                    COALESCE(partner_comp_waiting, 0) as partner_comp_waiting
-                FROM revenue_ledger
-            ) combined_stats
-            """
-            params = None
-
-        stats, _, error = self._execute_query(sql, params, fetch='one')
-        if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
-            raise error
-        return stats, error
 
     # ===== NEW (additions for feedback feature) =====
 

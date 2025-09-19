@@ -707,16 +707,6 @@ async def get_partners_payouts(current_user: dict = Depends(get_current_active_u
         raise HTTPException(status_code=500, detail=str(error))
     return partners_payouts
 
-@app.get("/revenue_ledger_stats")
-async def get_revenue_ledger_stats(current_user: dict = Depends(get_current_active_user)):
-    client = SqlClient()
-    if current_user.get("role") in ("admin", "internal"):
-        stats, error = client.get_revenue_ledger_stats()
-    else:
-        stats, error = client.get_revenue_ledger_stats(current_user.get("mapped_vendor_qbo_id"))
-    if error:
-        raise HTTPException(status_code=500, detail=str(error))
-    return stats
 
 
 if __name__ == "__main__":
