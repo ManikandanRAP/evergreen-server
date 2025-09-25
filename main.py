@@ -536,6 +536,19 @@ def filter_podcasts(filters: ShowFilterParams = Depends(), current_user: User = 
         raise HTTPException(status_code=400, detail=str(error))
     return podcasts
 
+@app.get("/podcasts/archived", response_model=list[Show])
+def get_archived_podcasts(current_user: User = Depends(get_current_active_user)):
+    """Get all archived shows - Admin and Internal users only"""
+    # Check if user is admin or internal
+    if current_user.get("role") not in ("admin", "internal"):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    client = SqlClient()
+    archived_shows, error = client.get_archived_podcasts()
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    return archived_shows
+
 @app.get("/podcasts/{show_id}", response_model=Show)
 def get_podcast(show_id: str, current_user: User = Depends(get_current_active_user)):
     if current_user.get("role") not in ("admin", "internal"):
@@ -582,6 +595,68 @@ def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     success, error = client.delete_podcast(show_id)
     if not success:
         raise HTTPException(status_code=404, detail=error)
+
+# Archive endpoints
+@app.patch("/podcasts/{show_id}/archive", response_model=Show)
+def archive_podcast(show_id: str, admin: User = Depends(get_admin_user)):
+    """Archive a show - Admin only"""
+    # Check if user is admin
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin users can archive shows")
+    
+    client = SqlClient()
+    archived_show, error = client.archive_podcast(show_id, admin.get("name"), admin.get("id"))
+    if error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return archived_show
+
+@app.patch("/podcasts/{show_id}/unarchive", response_model=Show)
+def unarchive_podcast(show_id: str, admin: User = Depends(get_admin_user)):
+    """Unarchive a show - Admin only"""
+    # Check if user is admin
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin users can unarchive shows")
+    
+    client = SqlClient()
+    unarchived_show, error = client.unarchive_podcast(show_id, admin.get("name"), admin.get("id"))
+    if error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return unarchived_show
+
+class BulkArchiveRequest(BaseModel):
+    show_ids: List[str]
+
+@app.patch("/podcasts/bulk-archive", response_model=dict)
+def bulk_archive_podcasts(request: BulkArchiveRequest, admin: User = Depends(get_admin_user)):
+    """Bulk archive multiple shows - Admin only"""
+    # Check if user is admin
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin users can archive shows")
+    
+    if not request.show_ids:
+        raise HTTPException(status_code=400, detail="No show IDs provided")
+    
+    client = SqlClient()
+    result, error = client.bulk_archive_podcasts(request.show_ids, admin.get("name"), admin.get("id"))
+    if error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return result
+
+@app.patch("/podcasts/bulk-unarchive", response_model=dict)
+def bulk_unarchive_podcasts(request: BulkArchiveRequest, admin: User = Depends(get_admin_user)):
+    """Bulk unarchive multiple shows - Admin only"""
+    # Check if user is admin
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin users can unarchive shows")
+    
+    if not request.show_ids:
+        raise HTTPException(status_code=400, detail="No show IDs provided")
+    
+    client = SqlClient()
+    result, error = client.bulk_unarchive_podcasts(request.show_ids, admin.get("name"), admin.get("id"))
+    if error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return result
 
 @app.get("/vendors")
 def get_vendors(admin: User = Depends(get_admin_user)):

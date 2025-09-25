@@ -165,7 +165,7 @@ class SqlClient:
             return None, 0, e
 
     def get_all_podcasts(self):
-        sql = "SELECT * FROM shows"
+        sql = "SELECT * FROM shows WHERE is_archived = FALSE OR is_archived IS NULL"
         shows, _, error = self._execute_query(sql, fetch='all')
         if error:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
@@ -840,3 +840,134 @@ class SqlClient:
                 raise error
             return None, error
         return results or [], None
+
+    # Archive methods
+    def archive_podcast(self, show_id: str, user_name: str, user_id: str):
+        """Archive a podcast"""
+        try:
+            sql = """
+            UPDATE shows 
+            SET is_archived = TRUE, 
+                archived_at = NOW(), 
+                archived_by = %s,
+                archived_by_id = %s
+            WHERE id = %s
+            """
+            _, rows_affected, error = self._execute_query(sql, (user_name, user_id, show_id), is_transaction=True)
+            if error:
+                return None, str(error)
+            if rows_affected == 0:
+                return None, "Show not found"
+            
+            # Return updated show
+            return self.get_podcast_by_id(show_id)
+        except Exception as e:
+            return None, str(e)
+
+    def unarchive_podcast(self, show_id: str, user_name: str, user_id: str):
+        """Unarchive a podcast"""
+        try:
+            sql = """
+            UPDATE shows 
+            SET is_archived = FALSE, 
+                archived_at = NULL, 
+                archived_by = NULL,
+                archived_by_id = NULL
+            WHERE id = %s
+            """
+            _, rows_affected, error = self._execute_query(sql, (show_id,), is_transaction=True)
+            if error:
+                return None, str(error)
+            if rows_affected == 0:
+                return None, "Show not found"
+            
+            # Return updated show
+            return self.get_podcast_by_id(show_id)
+        except Exception as e:
+            return None, str(e)
+
+    def get_archived_podcasts(self):
+        """Get all archived podcasts"""
+        try:
+            sql = "SELECT * FROM shows WHERE is_archived = TRUE ORDER BY archived_at DESC"
+            shows, _, error = self._execute_query(sql, fetch='all')
+            if error:
+                if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                    raise error
+                return None, str(error)
+            
+            # Parse annual_usd JSON strings to dictionaries
+            for show in shows:
+                annual_usd_raw = show.get('annual_usd')
+                if isinstance(annual_usd_raw, str):
+                    try:
+                        annual_usd = json.loads(annual_usd_raw)
+                    except json.JSONDecodeError:
+                        annual_usd = {}
+                else:
+                    annual_usd = annual_usd_raw if isinstance(annual_usd_raw, dict) else {}
+                show['annual_usd'] = annual_usd
+                show['revenue_2023'] = annual_usd.get('2023', 0)
+                show['revenue_2024'] = annual_usd.get('2024', 0)
+                show['revenue_2025'] = annual_usd.get('2025', 0)
+            
+            return shows, None
+        except Exception as e:
+            return None, str(e)
+
+    def bulk_archive_podcasts(self, show_ids: list, user_name: str, user_id: str):
+        """Bulk archive multiple podcasts"""
+        try:
+            if not show_ids:
+                return {"successful": 0, "failed": 0, "message": "No shows to archive"}, None
+            
+            placeholders = ', '.join(['%s'] * len(show_ids))
+            sql = f"""
+            UPDATE shows 
+            SET is_archived = TRUE, 
+                archived_at = NOW(), 
+                archived_by = %s,
+                archived_by_id = %s
+            WHERE id IN ({placeholders})
+            """
+            params = [user_name, user_id] + show_ids
+            _, rows_affected, error = self._execute_query(sql, tuple(params), is_transaction=True)
+            
+            if error:
+                return None, str(error)
+            
+            return {
+                "successful": rows_affected,
+                "failed": len(show_ids) - rows_affected,
+                "message": f"Successfully archived {rows_affected} shows"
+            }, None
+        except Exception as e:
+            return None, str(e)
+
+    def bulk_unarchive_podcasts(self, show_ids: list, user_name: str, user_id: str):
+        """Bulk unarchive multiple podcasts"""
+        try:
+            if not show_ids:
+                return {"successful": 0, "failed": 0, "message": "No shows to unarchive"}, None
+            
+            placeholders = ', '.join(['%s'] * len(show_ids))
+            sql = f"""
+            UPDATE shows 
+            SET is_archived = FALSE, 
+                archived_at = NULL, 
+                archived_by = NULL,
+                archived_by_id = NULL
+            WHERE id IN ({placeholders})
+            """
+            _, rows_affected, error = self._execute_query(sql, tuple(show_ids), is_transaction=True)
+            
+            if error:
+                return None, str(error)
+            
+            return {
+                "successful": rows_affected,
+                "failed": len(show_ids) - rows_affected,
+                "message": f"Successfully unarchived {rows_affected} shows"
+            }, None
+        except Exception as e:
+            return None, str(e)

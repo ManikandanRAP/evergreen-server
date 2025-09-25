@@ -387,6 +387,10 @@ class Show(BaseModel):
     region:Optional[str] = None
     primary_education:Optional[str] = None
     secondary_education:Optional[str] = None
+    # Archive fields
+    is_archived: bool = Field(False, alias='is_archived')
+    archived_at: Optional[datetime] = None
+    archived_by: Optional[str] = None
     is_undersized: Optional[bool] = None
     is_active: Optional[bool] = None
     qbo_show_id: Optional[int] = None
@@ -458,6 +462,8 @@ class ShowUpdate(BaseModel):
     region: Optional[str] = None
     qbo_show_id: Optional[int] = None
     qbo_show_name: Optional[str] = None
+    # Archive fields
+    is_archived: Optional[bool] = None
         
     # --- Case/space-insensitive normalizers for CSV import ---
 
