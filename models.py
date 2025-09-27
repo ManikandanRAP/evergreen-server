@@ -134,7 +134,8 @@ class RankingCategory(str, Enum):
 class Role(str, Enum):
     admin = 'admin'
     partner = 'partner'
-    internal = 'internal'
+    internal_full_access = 'internal_full_access'
+    internal_show_access = 'internal_show_access'
 
 class GenreName(str, Enum):
     History = 'History'
@@ -219,6 +220,7 @@ class ShowCreate(BaseModel):
     is_original: Optional[bool] = False
     cadence: Optional[Cadence] = None
     latest_cpm_usd: Optional[float] = None
+    span_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
     start_date: Optional[date] = None
@@ -359,6 +361,7 @@ class Show(BaseModel):
     is_original: Optional[bool] = None
     cadence: Optional[Cadence] = None
     latest_cpm_usd: Optional[float] = None
+    span_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
     start_date: Optional[date] = None
@@ -391,6 +394,11 @@ class Show(BaseModel):
     is_archived: bool = Field(False, alias='is_archived')
     archived_at: Optional[datetime] = None
     archived_by: Optional[str] = None
+    archived_by_id: Optional[str] = None
+    # Creation fields
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    created_by_id: Optional[str] = None
     is_undersized: Optional[bool] = None
     is_active: Optional[bool] = None
     qbo_show_id: Optional[int] = None
@@ -430,6 +438,7 @@ class ShowUpdate(BaseModel):
     is_original: Optional[bool] = None
     cadence: Optional[Cadence] = None
     latest_cpm_usd: Optional[float] = None
+    span_cpm_usd: Optional[float] = None
     ad_slots: Optional[int] = None
     avg_show_length_mins: Optional[int] = None
     start_date: Optional[date] = None

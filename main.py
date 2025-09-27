@@ -88,6 +88,11 @@ async def get_admin_user(current_user: User = Depends(get_current_active_user)):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
+async def get_admin_or_internal_user(current_user: User = Depends(get_current_active_user)):
+    if current_user.get("role") not in ("admin", "internal_full_access", "internal_show_access"):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
 # ----------------------
 # Auth endpoints
 # ----------------------
@@ -144,7 +149,7 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
         user_data.name,
         user_data.email,
         hashed_password,
-        user_data.role,  # "admin" | "partner" | "internal"
+        user_data.role,  # "admin" | "partner" | "internal_full_access" | "internal_show_access"
         datetime.now(timezone.utc),
         user_data.mapped_vendor_qbo_id,
     )
@@ -160,7 +165,7 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     }
 
 @app.get("/users", response_model=List[UserListItem])
-def list_users(admin: User = Depends(get_admin_user)):
+def list_users(admin: User = Depends(get_admin_or_internal_user)):
     client = SqlClient()
     users, error = client.get_all_users()
     if error:
@@ -193,6 +198,16 @@ def list_users(admin: User = Depends(get_admin_user)):
             }
         )
     return result
+
+@app.get("/users/{user_id}", response_model=User)
+def get_user_by_id(user_id: str, admin: User = Depends(get_admin_or_internal_user)):
+    client = SqlClient()
+    user, error = client.get_user_by_id(user_id)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 @app.put("/users/{user_id}", response_model=UserListItem)
 def update_user(user_id: str, payload: UserUpdate, admin: User = Depends(get_admin_user)):
@@ -315,8 +330,12 @@ def delete_feedback(feedback_id: str, admin: User = Depends(get_admin_user)):
 # ----------------------
 @app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
+    print('Admin object:', admin)
+    print('Admin type:', type(admin))
+    print('Admin name:', admin.get('name') if hasattr(admin, 'get') else getattr(admin, 'name', None))
+    print('Admin id:', admin.get('id') if hasattr(admin, 'get') else getattr(admin, 'id', None))
     client = SqlClient()
-    new_show, error = client.create_podcast(show_data)
+    new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
     return new_show
@@ -332,7 +351,7 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
             failed_imports += 1
             errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
             continue
-        new_show, error = client.create_podcast(show_data)
+        new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
         if error:
             failed_imports += 1
             errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
@@ -468,7 +487,7 @@ def bulk_create_podcasts_with_actions(
         
         elif action == "create":
             # Create new show (with duplicate check)
-            new_show, error = client.create_podcast(show_data)
+            new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
             if error:
                 failed_imports += 1
                 errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
@@ -520,14 +539,14 @@ class ShowFilterParams:
 
 @app.get("/podcasts", response_model=list[Show])
 def get_all_podcasts(current_user: User = Depends(get_current_active_user)):
-    if current_user.get("role") not in ("admin", "internal"):
+    if current_user.get("role") not in ("admin", "internal", "internal_full_access", "internal_show_access"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     client = SqlClient()
     return client.get_all_podcasts()
 
 @app.get("/podcasts/filter", response_model=list[Show])
 def filter_podcasts(filters: ShowFilterParams = Depends(), current_user: User = Depends(get_current_active_user)):
-    if current_user.get("role") not in ("admin", "internal"):
+    if current_user.get("role") not in ("admin", "internal", "internal_full_access", "internal_show_access"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     client = SqlClient()
     filter_dict = {k: v for k, v in vars(filters).items() if v is not None}
@@ -540,7 +559,7 @@ def filter_podcasts(filters: ShowFilterParams = Depends(), current_user: User = 
 def get_archived_podcasts(current_user: User = Depends(get_current_active_user)):
     """Get all archived shows - Admin and Internal users only"""
     # Check if user is admin or internal
-    if current_user.get("role") not in ("admin", "internal"):
+    if current_user.get("role") not in ("admin", "internal", "internal_full_access", "internal_show_access"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     client = SqlClient()
@@ -551,7 +570,7 @@ def get_archived_podcasts(current_user: User = Depends(get_current_active_user))
 
 @app.get("/podcasts/{show_id}", response_model=Show)
 def get_podcast(show_id: str, current_user: User = Depends(get_current_active_user)):
-    if current_user.get("role") not in ("admin", "internal"):
+    if current_user.get("role") not in ("admin", "internal", "internal_full_access", "internal_show_access"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     client = SqlClient()
     show, error = client.get_podcast_by_id(show_id)
@@ -763,7 +782,7 @@ def catalog_all_vendors(admin: User = Depends(get_admin_user)):
 @app.get("/ledger")
 async def get_ledger(current_user: dict = Depends(get_current_active_user)):
     client = SqlClient()
-    if current_user.get("role") in ("admin", "internal"):
+    if current_user.get("role") in ("admin", "internal", "internal_full_access"):
         ledger, error = client.get_ledger()
     else:
         ledger, error = client.get_ledger(current_user.get("mapped_vendor_qbo_id"))
@@ -774,7 +793,7 @@ async def get_ledger(current_user: dict = Depends(get_current_active_user)):
 @app.get("/partner_payouts")
 async def get_partners_payouts(current_user: dict = Depends(get_current_active_user)):
     client = SqlClient()
-    if current_user.get("role") in ("admin", "internal"):
+    if current_user.get("role") in ("admin", "internal", "internal_full_access"):
         partners_payouts, error = client.get_partner_payouts()
     else:
         partners_payouts, error = client.get_partner_payouts(current_user.get("mapped_vendor_qbo_id"))

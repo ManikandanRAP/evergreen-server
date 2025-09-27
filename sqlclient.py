@@ -34,6 +34,7 @@ COLUMN_MAPPING = {
     "minimum_guarantee": "minimum_guarantee",
     "evergreen_ownership_pct": "evergreen_ownership_pct",
     "latest_cpm_usd": "latest_cpm_usd",
+    "span_cpm_usd": "span_cpm_usd",
     "has_sponsorship_revenue": "has_sponsorship_revenue",
     "has_non_evergreen_revenue": "has_non_evergreen_revenue",
     "requires_partner_access": "requires_partner_access",
@@ -327,10 +328,12 @@ class SqlClient:
         except Exception as e:
             return None, str(e)
 
-    def create_podcast(self, show_data):
+    def create_podcast(self, show_data, user_name=None, user_id=None):
         try:
             print('in create function')
-            print(show_data)
+            print('show_data:', show_data)
+            print('user_name:', user_name)
+            print('user_id:', user_id)
 
             # Check for duplicate before creating
             existing_show, error = self.check_duplicate_show(show_data.title)
@@ -347,6 +350,11 @@ class SqlClient:
             show_dict["rate_card"] = show_dict.pop("is_rate_card")
 
             show_dict["start_date"] = normalize_mysql_date(show_dict["start_date"])
+            
+            # Set creation metadata
+            show_dict["created_by"] = user_name or "System"
+            show_dict["created_by_id"] = user_id or "system"
+            show_dict["created_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # --- Normalize revenues ---
             def _norm(v):
@@ -546,7 +554,7 @@ class SqlClient:
 
     def get_split_shows_for_user(self, user: dict):
         # Allow admin and internal to view the full list; partners get their own only
-        if user.get('role') in ('admin', 'internal'):
+        if user.get('role') in ('admin', 'internal', 'internal_full_access', 'internal_show_access'):
             sql = "SELECT DISTINCT show_name, show_qbo_id FROM split_history WHERE show_name IS NOT NULL AND show_qbo_id IS NOT NULL"
             params = None
         elif user.get('role') == 'partner' and user.get('mapped_vendor_qbo_id'):
