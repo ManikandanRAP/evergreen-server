@@ -79,8 +79,8 @@ class SplitCreate(BaseModel):
     vendor_qbo_id: int
     show_name: str
     vendor_name: str
-    evergreen_pct_ads: float
-    evergreen_pct_programmatic: float
+    partner_pct_ads: float
+    partner_pct_programmatic: float
     effective_date: date
 
 class Split(BaseModel):
@@ -89,8 +89,8 @@ class Split(BaseModel):
     show_name: str
     vendor_qbo_id: int
     vendor_name: str
-    evergreen_pct_ads: float
-    evergreen_pct_programmatic: float
+    partner_pct_ads: float
+    partner_pct_programmatic: float
     effective_date: date
 
 class Region(str, Enum):

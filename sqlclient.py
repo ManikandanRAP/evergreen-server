@@ -578,13 +578,13 @@ class SqlClient:
 
     def create_split(self, split_data):
         insert_sql = """
-        INSERT INTO split_history (show_qbo_id, vendor_qbo_id, show_name, vendor_name, evergreen_pct_ads, evergreen_pct_programmatic, effective_date)
+        INSERT INTO split_history (show_qbo_id, vendor_qbo_id, show_name, vendor_name, partner_pct_ads, partner_pct_programmatic, effective_date)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
         params = (
             split_data.show_qbo_id, split_data.vendor_qbo_id, split_data.show_name,
-            split_data.vendor_name, split_data.evergreen_pct_ads,
-            split_data.evergreen_pct_programmatic, split_data.effective_date,
+            split_data.vendor_name, split_data.partner_pct_ads,
+            split_data.partner_pct_programmatic, split_data.effective_date,
         )
         try:
             with get_db_connection() as db:
@@ -632,14 +632,14 @@ class SqlClient:
         """Update an existing split record."""
         sql = """
         UPDATE split_history 
-        SET evergreen_pct_ads = %s, 
-            evergreen_pct_programmatic = %s, 
+        SET partner_pct_ads = %s, 
+            partner_pct_programmatic = %s, 
             effective_date = %s
         WHERE split_id = %s
         """
         _, rows_affected, error = self._execute_query(
             sql, 
-            (split_data.evergreen_pct_ads, split_data.evergreen_pct_programmatic, split_data.effective_date, split_id), 
+            (split_data.partner_pct_ads, split_data.partner_pct_programmatic, split_data.effective_date, split_id), 
             is_transaction=True
         )
         if error:
