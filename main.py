@@ -422,16 +422,19 @@ def check_single_duplicate(show_data: ShowCreate, current_user: User = Depends(g
     client = SqlClient()
     
     if not show_data.title or not show_data.title.strip():
-        return {"exists": False, "existing_show": None}
+        return {"exists": False, "existing_show": None, "is_archived": False}
     
-    # Check for existing show with this title
-    existing_show, error = client.check_duplicate_show(show_data.title)
+    # Check for existing show with this title, including archive status
+    existing_show, error = client.check_duplicate_show_with_archive_status(show_data.title)
     if error:
         raise HTTPException(status_code=500, detail=str(error))
     
+    is_archived = existing_show and existing_show.get('is_archived', False)
+    
     return {
         "exists": existing_show is not None,
-        "existing_show": existing_show
+        "existing_show": existing_show,
+        "is_archived": is_archived
     }
 
 @app.post("/podcasts/bulk-import-with-actions")

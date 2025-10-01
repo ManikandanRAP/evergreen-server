@@ -310,6 +310,34 @@ class SqlClient:
         except Exception as e:
             return None, str(e)
 
+    def check_duplicate_show_with_archive_status(self, title: str, exclude_id: str = None):
+        """Check if a show with the given title already exists, distinguishing between archived and active shows"""
+        try:
+            if exclude_id:
+                sql = """
+                SELECT *, 
+                       CASE WHEN is_archived = TRUE THEN 'archived' ELSE 'active' END as status
+                FROM shows 
+                WHERE LOWER(title) = LOWER(%s) AND id != %s
+                """
+                params = (title, exclude_id)
+            else:
+                sql = """
+                SELECT *, 
+                       CASE WHEN is_archived = TRUE THEN 'archived' ELSE 'active' END as status
+                FROM shows 
+                WHERE LOWER(title) = LOWER(%s)
+                """
+                params = (title,)
+            
+            existing_show, _, error = self._execute_query(sql, params, fetch='one')
+            if error:
+                return None, error
+            
+            return existing_show, None
+        except Exception as e:
+            return None, str(e)
+
     def check_duplicate_shows_bulk(self, show_titles: list):
         """Check multiple show titles for duplicates in one query"""
         try:
