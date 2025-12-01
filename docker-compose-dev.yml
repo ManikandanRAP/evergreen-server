@@ -1,32 +1,38 @@
 version: '3.8'
+
 services:
-  db:
-    image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: evergreen
-      MYSQL_USER: user
-      MYSQL_PASSWORD: rootpassword
+  backend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: evergreen-server-backend-dev
     ports:
-      - "3306:3306"
+      - "8001:8000"  # Dev uses port 8001
+    env_file:
+      - .env.dev
+    environment:
+      - DB_HOST=${DB_HOST:-db-dev}
+      - DB_USER=${DB_USER:-evergreen_user}
+      - DB_PASSWORD=${DB_PASSWORD:-dev_password_change_me}
+      - DB_NAME=${DB_NAME:-evergreen_dev}
+      - DB_PORT=${DB_PORT:-3306}
+      - SECRET_KEY=${SECRET_KEY:-dev_secret_key_change_me}
+      - ENVIRONMENT=development
+      - DEBUG=true
+    networks:
+      - evergreen_dev_net
+    restart: unless-stopped
     volumes:
-      # The MySQL data will be stored in a 'db_data' directory outside the project folder.
-      - ../db_data:/var/lib/mysql
-      - ./Dump20250727.sql:/docker-entrypoint-initdb.d/init.sql
-  app:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      - db
-    environment:
-      - DB_HOST=db
-      - DB_USER=user
-      - DB_PASSWORD=rootpassword
-      - DB_NAME=evergreen
-      - DB_PORT=3306
-      - SECRET_KEY=a_very_secret_key_that_should_be_in_env_vars
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  evergreen_dev_net:
+    external: true
 
 

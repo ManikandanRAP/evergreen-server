@@ -1,10 +1,13 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from typing import Optional, List, Any, Dict
 from datetime import datetime, timezone
 import uuid
+import io
+import re
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -27,6 +30,7 @@ from models import (
     PodcastIn,
     UserListItem,
     UserUpdate,
+    UserSettingsUpdate,  # Import for user settings
     FeedbackCreate, # Import Feedback models
     Feedback,
     BaseModel,
@@ -111,6 +115,24 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 @app.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    # Populate mapped_vendor_name if mapped_vendor_qbo_id exists
+    if current_user.get("mapped_vendor_qbo_id"):
+        client = SqlClient()
+        vendors = client.get_all_vendors()
+        vendor_map = {}
+        for v in vendors or []:
+            vid = v.get("vendor_qbo_id")
+            vname = v.get("vendor_name") or v.get("vendor_qbo_name") or v.get("displayname")
+            if vid is not None and vname:
+                try:
+                    vendor_map[int(vid)] = vname
+                except Exception:
+                    pass
+        
+        vid = current_user.get("mapped_vendor_qbo_id")
+        if vid is not None:
+            current_user["mapped_vendor_name"] = vendor_map.get(int(vid))
+    
     return current_user
 
 @app.post("/users/check-username", response_model=UsernameCheckResponse)
@@ -126,6 +148,31 @@ async def check_username_availability(request: UsernameCheckRequest, current_use
     available = existing_user is None
     
     return UsernameCheckResponse(available=available)
+
+# ----------------------
+# User Settings
+# ----------------------
+@app.get("/users/me/settings")
+async def get_user_settings(current_user: User = Depends(get_current_active_user)):
+    """Get the current user's settings"""
+    client = SqlClient()
+    settings, error = client.get_user_settings(current_user.get("id"))
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    # Return empty dict if no settings exist yet
+    return settings or {}
+
+@app.put("/users/me/settings")
+async def update_user_settings(
+    settings_update: UserSettingsUpdate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update the current user's settings"""
+    client = SqlClient()
+    success, error = client.update_user_settings(current_user.get("id"), settings_update.settings)
+    if not success:
+        raise HTTPException(status_code=500, detail=str(error))
+    return {"message": "Settings updated successfully", "settings": settings_update.settings}
 
 # ----------------------
 # Users (admin only)
@@ -805,6 +852,464 @@ async def get_partners_payouts(current_user: dict = Depends(get_current_active_u
     return partners_payouts
 
 
+# ----------------------
+# Database Export/Import (Admin only - Developer Options)
+# Uses pure Python - no external tools required
+# ----------------------
+@app.get("/admin/database/export")
+async def export_database(admin: User = Depends(get_admin_user)):
+    """
+    Export the current database as a SQL dump file.
+    Admin only - requires developer options access.
+    Uses pure Python for cross-platform compatibility.
+    """
+    try:
+        from config import DB_NAME
+        
+        client = SqlClient()
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Build SQL dump content
+        sql_parts = []
+        sql_parts.append(f"-- Evergreen Database Export")
+        sql_parts.append(f"-- Exported by: {admin.get('name')} ({admin.get('email')})")
+        sql_parts.append(f"-- Timestamp: {timestamp}")
+        sql_parts.append(f"-- Database: {DB_NAME}")
+        sql_parts.append("-- ============================================\n")
+        sql_parts.append("SET FOREIGN_KEY_CHECKS=0;")
+        sql_parts.append("SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';")
+        sql_parts.append("SET AUTOCOMMIT=0;")
+        sql_parts.append("START TRANSACTION;\n")
+        
+        # Get all tables
+        tables_query = "SHOW TABLES"
+        tables_result, _, error = client._execute_query(tables_query, fetch='all')
+        if error:
+            raise HTTPException(status_code=500, detail=f"Failed to get tables: {error}")
+        
+        table_names = [list(t.values())[0] for t in (tables_result or [])]
+        
+        for table_name in table_names:
+            # Get CREATE TABLE statement
+            create_query = f"SHOW CREATE TABLE `{table_name}`"
+            create_result, _, error = client._execute_query(create_query, fetch='all')
+            if error:
+                continue
+            
+            if create_result and len(create_result) > 0:
+                create_stmt = create_result[0].get('Create Table', '')
+                sql_parts.append(f"\n-- Table structure for `{table_name}`")
+                sql_parts.append(f"DROP TABLE IF EXISTS `{table_name}`;")
+                sql_parts.append(f"{create_stmt};\n")
+            
+            # Get table data
+            data_query = f"SELECT * FROM `{table_name}`"
+            data_result, _, error = client._execute_query(data_query, fetch='all')
+            if error or not data_result:
+                continue
+            
+            if len(data_result) > 0:
+                sql_parts.append(f"-- Data for `{table_name}`")
+                columns = list(data_result[0].keys())
+                col_names = ", ".join([f"`{c}`" for c in columns])
+                
+                for row in data_result:
+                    values = []
+                    for col in columns:
+                        val = row.get(col)
+                        if val is None:
+                            values.append("NULL")
+                        elif isinstance(val, (int, float)):
+                            values.append(str(val))
+                        elif isinstance(val, bool):
+                            values.append("1" if val else "0")
+                        elif isinstance(val, datetime):
+                            values.append(f"'{val.strftime('%Y-%m-%d %H:%M:%S')}'")
+                        else:
+                            # Escape single quotes and backslashes
+                            escaped = str(val).replace("\\", "\\\\").replace("'", "\\'")
+                            values.append(f"'{escaped}'")
+                    
+                    values_str = ", ".join(values)
+                    sql_parts.append(f"INSERT INTO `{table_name}` ({col_names}) VALUES ({values_str});")
+                
+                sql_parts.append("")
+        
+        sql_parts.append("\nCOMMIT;")
+        sql_parts.append("SET FOREIGN_KEY_CHECKS=1;")
+        
+        sql_content = "\n".join(sql_parts)
+        filename = f"evergreen_backup_{timestamp}.sql"
+        
+        return StreamingResponse(
+            io.BytesIO(sql_content.encode('utf-8')),
+            media_type="application/sql",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Export-Timestamp": timestamp,
+                "X-Exported-By": admin.get('email', 'unknown')
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database export failed: {str(e)}"
+        )
+
+
+class DatabaseImportResponse(BaseModel):
+    success: bool
+    message: str
+    tables_affected: Optional[int] = None
+    warnings: Optional[List[str]] = None
+    executed_at: str
+
+
+@app.post("/admin/database/import", response_model=DatabaseImportResponse)
+async def import_database(
+    file: UploadFile = File(...),
+    admin: User = Depends(get_admin_user)
+):
+    """
+    Import a SQL dump file to restore/replace the current database.
+    Admin only - requires developer options access.
+    Uses pure Python for cross-platform compatibility.
+    
+    WARNING: This will replace existing data!
+    """
+    if not file.filename.endswith('.sql'):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Only .sql files are accepted."
+        )
+    
+    try:
+        # Read the uploaded file
+        content = await file.read()
+        sql_content = content.decode('utf-8')
+        
+        # Basic validation - check for dangerous commands
+        dangerous_patterns = [
+            "DROP DATABASE",
+            "CREATE DATABASE",
+            "GRANT ",
+            "REVOKE ",
+        ]
+        
+        warnings = []
+        for pattern in dangerous_patterns:
+            if pattern.upper() in sql_content.upper():
+                warnings.append(f"SQL file contains '{pattern}' command which has been blocked for safety.")
+                sql_content = sql_content.replace(pattern, f"-- BLOCKED: {pattern}")
+                sql_content = sql_content.replace(pattern.lower(), f"-- BLOCKED: {pattern.lower()}")
+        
+        client = SqlClient()
+        
+        # Disable foreign key checks to allow dropping tables with foreign keys
+        client._execute_query("SET FOREIGN_KEY_CHECKS=0;", is_transaction=False)
+        client._execute_query("SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';", is_transaction=False)
+        
+        # Drop all existing foreign key constraints to allow dropping any table
+        # This is necessary because even with FOREIGN_KEY_CHECKS=0, you can't drop a table
+        # that has foreign keys pointing to it from other tables
+        try:
+            from config import DB_NAME
+            # Use REFERENTIAL_CONSTRAINTS which is more reliable for foreign keys
+            fk_query = """
+                SELECT 
+                    CONSTRAINT_SCHEMA,
+                    TABLE_NAME,
+                    CONSTRAINT_NAME
+                FROM information_schema.REFERENTIAL_CONSTRAINTS
+                WHERE CONSTRAINT_SCHEMA = %s
+            """
+            fk_results, _, fk_error = client._execute_query(fk_query, params=(DB_NAME,), fetch='all')
+            
+            if not fk_error and fk_results:
+                # Get unique constraint names (same constraint might appear multiple times)
+                constraints_to_drop = {}
+                for fk in fk_results:
+                    table = fk.get('TABLE_NAME')
+                    constraint = fk.get('CONSTRAINT_NAME')
+                    if table and constraint:
+                        key = f"{table}.{constraint}"
+                        if key not in constraints_to_drop:
+                            constraints_to_drop[key] = (table, constraint)
+                
+                # Drop all foreign key constraints
+                for table_name, constraint_name in constraints_to_drop.values():
+                    try:
+                        drop_fk_query = f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`"
+                        client._execute_query(drop_fk_query, is_transaction=False)
+                    except Exception as e:
+                        # Log but continue - constraint might not exist or already dropped
+                        pass
+        except Exception as e:
+            # If dropping foreign keys fails, continue anyway - the import might still work
+            pass
+        
+        # Split SQL content into individual statements
+        # Remove comments and split by semicolons
+        statements = []
+        current_statement = []
+        
+        lines = sql_content.split('\n')
+        for line in lines:
+            stripped = line.strip()
+            # Skip empty lines and standalone comments
+            if not stripped:
+                continue
+            
+            # Skip MySQL conditional comments (/*!...*/) that are just SET statements
+            # These often contain SET commands for character sets, collations, etc.
+            if stripped.startswith('/*!') and 'SET' in stripped.upper():
+                # Check if it's a SET statement (character sets, collations, time zones, etc.)
+                if any(keyword in stripped.upper() for keyword in [
+                    'CHARACTER_SET', 'COLLATION', 'TIME_ZONE', 'SQL_MODE',
+                    'FOREIGN_KEY_CHECKS', 'UNIQUE_CHECKS', 'SQL_NOTES'
+                ]):
+                    continue
+            
+            # Skip regular comments
+            if stripped.startswith('--') or stripped.startswith('#'):
+                continue
+            
+            current_statement.append(line)
+            
+            # Check if line ends with semicolon (simple check)
+            if stripped.endswith(';'):
+                stmt = '\n'.join(current_statement).strip()
+                if stmt and not stmt.startswith('--'):
+                    statements.append(stmt)
+                current_statement = []
+        
+        # Execute each statement
+        successful = 0
+        failed = 0
+        errors = []
+        failed_statements = []
+        
+        for stmt in statements:
+            try:
+                stmt_upper = stmt.upper().strip()
+                
+                # Skip SET statements (character set, transaction control, etc.)
+                # Also skip SET statements that try to restore variables (SET @variable = @saved_variable)
+                # Check for SET at the start or after whitespace/comments
+                is_set_statement = (
+                    stmt_upper.startswith('SET ') or
+                    stmt_upper.startswith('SET@') or
+                    stmt_upper.startswith('SET@@') or
+                    ' SET ' in stmt_upper or
+                    ' SET@' in stmt_upper or
+                    ' SET@@' in stmt_upper
+                )
+                
+                if is_set_statement or any(stmt_upper.startswith(x) for x in [
+                    'START TRANSACTION', 
+                    'COMMIT', 
+                    'ROLLBACK'
+                ]):
+                    # Skip all SET statements to avoid variable restoration errors
+                    # This includes:
+                    # - SET variable = @saved_variable (restores saved variables)
+                    # - SET @@variable = value (system variables)
+                    # - SET @variable = value (user variables)
+                    # - SET character_set_client, collation_connection, time_zone, etc.
+                    continue
+                
+                # Skip MySQL version-specific conditional statements that are just SET commands
+                if '/*!' in stmt and 'SET' in stmt_upper and 'character_set' in stmt.lower():
+                    continue
+                
+                # Convert DROP TABLE to DROP TABLE IF EXISTS for safety
+                if stmt_upper.startswith('DROP TABLE') and 'IF EXISTS' not in stmt_upper:
+                    # Extract table name (handle backticks and multiple spaces)
+                    # Pattern: DROP TABLE `table_name` or DROP TABLE table_name
+                    table_match = re.search(r'DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"]?([a-zA-Z0-9_]+)[`"]?', stmt_upper, re.IGNORECASE)
+                    if table_match:
+                        table_name = table_match.group(1)
+                        stmt = f"DROP TABLE IF EXISTS `{table_name}`"
+                    else:
+                        # Fallback: try to extract any identifier after DROP TABLE
+                        parts = stmt_upper.split()
+                        if len(parts) >= 3:
+                            # Get the table name part (skip DROP and TABLE)
+                            potential_table = parts[2].strip('`"')
+                            if potential_table:
+                                stmt = f"DROP TABLE IF EXISTS `{potential_table}`"
+                
+                # Convert INSERT to INSERT IGNORE to handle duplicates gracefully
+                # But only if it's not already INSERT IGNORE or REPLACE
+                if (stmt_upper.startswith('INSERT ') and 
+                    'INSERT IGNORE' not in stmt_upper and 
+                    'REPLACE' not in stmt_upper and
+                    'ON DUPLICATE KEY UPDATE' not in stmt_upper):
+                    # Replace INSERT with INSERT IGNORE
+                    stmt = re.sub(r'^INSERT\s+', 'INSERT IGNORE ', stmt, flags=re.IGNORECASE)
+                    
+                _, _, error = client._execute_query(stmt, is_transaction=True)
+                if error:
+                    error_msg = str(error)
+                    # If DROP TABLE failed due to foreign key constraint, try to drop the constraint
+                    if stmt_upper.startswith('DROP TABLE') and 'foreign key constraint' in error_msg.lower():
+                        # Extract table name and constraint name from error
+                        # Error format: "Cannot drop table 'X' referenced by a foreign key constraint 'Y' on table 'Z'"
+                        fk_match = re.search(r"foreign key constraint ['`]?(\w+)['`]? on table ['`]?(\w+)['`]?", error_msg, re.IGNORECASE)
+                        if fk_match:
+                            constraint_name = fk_match.group(1)
+                            fk_table = fk_match.group(2)
+                            try:
+                                # Drop the foreign key constraint
+                                drop_fk_stmt = f"ALTER TABLE `{fk_table}` DROP FOREIGN KEY `{constraint_name}`"
+                                client._execute_query(drop_fk_stmt, is_transaction=False)
+                                # Retry the original DROP TABLE
+                                _, _, retry_error = client._execute_query(stmt, is_transaction=True)
+                                if not retry_error:
+                                    successful += 1
+                                    continue  # Success after retry
+                            except Exception:
+                                pass  # If dropping FK fails, continue to error handling
+                    
+                    failed += 1
+                    if len(errors) < 20:  # Increased limit for better debugging
+                        errors.append(error_msg[:200])  # Increased length for full error messages
+                    if len(failed_statements) < 10:
+                        # Store first 50 chars of failed statement for context
+                        failed_statements.append(stmt[:50] + '...' if len(stmt) > 50 else stmt)
+                else:
+                    successful += 1
+            except Exception as e:
+                failed += 1
+                error_msg = str(e)
+                if len(errors) < 20:
+                    errors.append(error_msg[:200])
+                if len(failed_statements) < 10:
+                    failed_statements.append(stmt[:50] + '...' if len(stmt) > 50 else stmt)
+        
+        # Re-enable foreign key checks
+        client._execute_query("SET FOREIGN_KEY_CHECKS=1;", is_transaction=False)
+        
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Build detailed message
+        if failed > 0:
+            warnings.append(f"{failed} statements failed to execute out of {successful + failed} total")
+            if errors:
+                # Add first 10 unique errors
+                unique_errors = list(dict.fromkeys(errors))[:10]
+                warnings.extend([f"Error: {err}" for err in unique_errors])
+            if failed_statements:
+                warnings.append(f"Sample failed statements: {len(failed_statements)} shown")
+        
+        # Determine success status
+        success_status = failed == 0 or (successful > 0 and failed < successful)
+        
+        # Build message with more detail
+        if failed == 0:
+            message = f"Database import completed successfully. {successful} statements executed."
+        elif successful > 0:
+            message = f"Database import completed with warnings. {successful} statements succeeded, {failed} failed. Some data may be missing."
+        else:
+            message = f"Database import failed. All {failed} statements failed to execute."
+        
+        return DatabaseImportResponse(
+            success=success_status,
+            message=message,
+            tables_affected=sql_content.upper().count("DROP TABLE") + sql_content.upper().count("CREATE TABLE"),
+            warnings=warnings if warnings else None,
+            executed_at=timestamp
+        )
+        
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid SQL file encoding. Please ensure the file is UTF-8 encoded."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database import failed: {str(e)}"
+        )
+
+
+@app.get("/admin/database/status")
+async def get_database_status(admin: User = Depends(get_admin_user)):
+    """
+    Get current database status and statistics.
+    Admin only.
+    """
+    from config import DB_NAME
+    
+    client = SqlClient()
+    
+    try:
+        # Get database name from config instead of DATABASE() function
+        database_name = DB_NAME
+        
+        # Get table information using the database name from config
+        tables_query = """
+        SELECT 
+            TABLE_NAME as table_name,
+            TABLE_ROWS as row_count,
+            ROUND(DATA_LENGTH / 1024 / 1024, 2) as data_size_mb,
+            ROUND(INDEX_LENGTH / 1024 / 1024, 2) as index_size_mb,
+            UPDATE_TIME as last_updated
+        FROM information_schema.TABLES 
+        WHERE TABLE_SCHEMA = %s
+        ORDER BY TABLE_ROWS DESC
+        """
+        
+        # Use parameterized query to avoid SQL injection and handle database name properly
+        tables, _, error = client._execute_query(tables_query, params=(database_name,), fetch='all')
+        if error:
+            # Fallback: try using SHOW TABLES if information_schema fails
+            try:
+                show_tables_query = "SHOW TABLES"
+                tables_result, _, show_error = client._execute_query(show_tables_query, fetch='all')
+                if show_error:
+                    raise HTTPException(status_code=500, detail=f"Failed to get tables: {str(error)}")
+                
+                # If we can't get detailed info, return basic table list
+                table_names = [list(t.values())[0] for t in (tables_result or [])]
+                return {
+                    "database_name": database_name,
+                    "total_tables": len(table_names),
+                    "total_rows": 0,
+                    "total_data_size_mb": 0,
+                    "total_index_size_mb": 0,
+                    "total_size_mb": 0,
+                    "tables": [{"table_name": name, "row_count": 0, "data_size_mb": 0, "index_size_mb": 0, "last_updated": None} for name in table_names],
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "warning": "Detailed table statistics unavailable. Using basic table list."
+                }
+            except Exception as fallback_error:
+                raise HTTPException(status_code=500, detail=f"Failed to get database status: {str(error)}. Fallback also failed: {str(fallback_error)}")
+        
+        # Calculate totals
+        total_rows = sum(t.get('row_count', 0) or 0 for t in (tables or []))
+        total_data_mb = sum(float(t.get('data_size_mb', 0) or 0) for t in (tables or []))
+        total_index_mb = sum(float(t.get('index_size_mb', 0) or 0) for t in (tables or []))
+        
+        return {
+            "database_name": database_name,
+            "total_tables": len(tables or []),
+            "total_rows": total_rows,
+            "total_data_size_mb": round(total_data_mb, 2),
+            "total_index_size_mb": round(total_index_mb, 2),
+            "total_size_mb": round(total_data_mb + total_index_mb, 2),
+            "tables": tables or [],
+            "checked_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get database status: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

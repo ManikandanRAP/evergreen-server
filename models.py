@@ -19,7 +19,7 @@ def _norm_key(v: Optional[str]) -> str:
 # ---- Canonical maps (keys are normalized) ----
 MEDIA_TYPE_MAP = {"video": "video", "audio": "audio", "both": "both"}
 REL_LEVEL_MAP  = {"strong": "strong", "medium": "medium", "weak": "weak"}
-SHOW_TYPE_MAP  = {"branded": "Branded", "original": "Original", "partner": "Partner"}
+SHOW_TYPE_MAP  = {"branded": "Branded", "original": "Original", "partner": "Partner", "hybrid": "Hybrid"}
 CADENCE_MAP = {"daily": "Daily", "weekly": "Weekly", "biweekly": "Biweekly", "monthly": "Monthly", "ad hoc": "Ad hoc", "adhoc": "Ad hoc"}
 
 RANKING_CATEGORY_MAP = {"1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
@@ -116,6 +116,7 @@ class ShowType(str, Enum):
     Branded = 'Branded'
     Original = 'Original'
     Partner = 'Partner'
+    Hybrid = 'Hybrid'
 
 class Cadence(str, Enum):
     Daily = 'Daily'
@@ -282,7 +283,7 @@ class ShowCreate(BaseModel):
         key = _norm_key(v)
         if key in SHOW_TYPE_MAP:
             return ShowType(SHOW_TYPE_MAP[key])
-        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner.")
+        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner, Hybrid.")
 
     @field_validator("ranking_category", mode="before")
     def _v_ranking_category(cls, v):
@@ -416,6 +417,14 @@ class User(BaseModel):
     password_hash: Optional[str] = None
     role: Optional[Role] = None
     created_at: Optional[datetime] = None
+    mapped_vendor_qbo_id: Optional[int] = None
+    mapped_vendor_name: Optional[str] = None
+    settings: Optional[dict] = None  # JSON field for user preferences/settings
+
+
+class UserSettingsUpdate(BaseModel):
+    """Model for updating user settings"""
+    settings: dict
 
 class ShowUpdate(BaseModel):    
     title: Optional[str] = None
@@ -502,7 +511,7 @@ class ShowUpdate(BaseModel):
         key = _norm_key(v)
         if key in SHOW_TYPE_MAP:
             return ShowType(SHOW_TYPE_MAP[key])
-        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner.")
+        raise ValueError("Invalid value for 'show_type'. Must be one of: Branded, Original, Partner, Hybrid.")
 
     @field_validator("ranking_category", mode="before")
     def _v_ranking_category(cls, v):

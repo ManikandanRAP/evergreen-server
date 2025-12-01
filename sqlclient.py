@@ -547,6 +547,13 @@ class SqlClient:
         user, _, error = self._execute_query(sql, (email,), fetch='one')
         if error:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
+        # Parse settings JSON if it exists
+        if user and user.get('settings'):
+            if isinstance(user['settings'], str):
+                try:
+                    user['settings'] = json.loads(user['settings'])
+                except json.JSONDecodeError:
+                    user['settings'] = None
         return user, error
 
     def get_user_by_id(self, user_id: str):
@@ -554,7 +561,46 @@ class SqlClient:
         user, _, error = self._execute_query(sql, (user_id,), fetch='one')
         if error:
             if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
+        # Parse settings JSON if it exists
+        if user and user.get('settings'):
+            if isinstance(user['settings'], str):
+                try:
+                    user['settings'] = json.loads(user['settings'])
+                except json.JSONDecodeError:
+                    user['settings'] = None
         return user, error
+
+    def get_user_settings(self, user_id: str):
+        """Get user settings by user ID"""
+        sql = "SELECT settings FROM users WHERE id = %s"
+        result, _, error = self._execute_query(sql, (user_id,), fetch='one')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)): raise error
+            return None, str(error)
+        if not result:
+            return None, "User not found"
+        
+        settings = result.get('settings')
+        if settings and isinstance(settings, str):
+            try:
+                settings = json.loads(settings)
+            except json.JSONDecodeError:
+                settings = None
+        return settings, None
+
+    def update_user_settings(self, user_id: str, settings: dict):
+        """Update user settings"""
+        try:
+            settings_json = json.dumps(settings)
+            sql = "UPDATE users SET settings = %s WHERE id = %s"
+            _, rows_affected, error = self._execute_query(sql, (settings_json, user_id), is_transaction=True)
+            if error:
+                return False, str(error)
+            if rows_affected == 0:
+                return False, "User not found"
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
     # ---------- NEW: update_user ----------
     def update_user(self, user_id: str, **kwargs):

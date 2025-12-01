@@ -5,7 +5,7 @@ services:
     container_name: evergreen-mysql
     environment:
       - MYSQL_ROOT_PASSWORD=rootpassword
-      - MYSQL_DATABASE=evergreen-db
+      - MYSQL_DATABASE=evergreen
       - MYSQL_USER=root
       - MYSQL_PASSWORD=rootpassword
     ports:
@@ -20,12 +20,12 @@ services:
     build: .
     container_name: evergreen-server-backend
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - DB_HOST=db
       - DB_USER=root
       - DB_PASSWORD=rootpassword
-      - DB_NAME=evergreen-db
+      - DB_NAME=evergreen
       - DB_PORT=3306
       - SECRET_KEY= a56355d68f0a1b04226cfae1768177aec80bf730faec8092b87af36d79791524
     networks:
