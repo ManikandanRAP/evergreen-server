@@ -37,7 +37,7 @@ def create_admin_user():
             cursor.execute(sql_check, ('admin@evergreen.com',))
             result = cursor.fetchone()
 
-            if False:
+            if result:
                 print("Admin user already exists.")
             else:
                 # Create new admin user

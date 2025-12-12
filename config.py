@@ -15,6 +15,10 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD') or config.get('database', 'password'
 DB_NAME = os.environ.get('DB_NAME') or config.get('database', 'name', fallback='evergreen')
 DB_PORT = int(os.environ.get('DB_PORT', 0)) or config.getint('database', 'db_port', fallback=3306)
 
+# Log database configuration for debugging (without exposing password)
+if DB_HOST:
+    print(f"Database configuration: DB_HOST={DB_HOST}, DB_PORT={DB_PORT}, DB_NAME={DB_NAME}, DB_USER={DB_USER}")
+
 # --- JWT Settings ---
 SECRET_KEY = os.environ.get('SECRET_KEY') or config.get('jwt', 'secret_key', fallback='change_me_secret_key')
 ALGORITHM = config.get('jwt', 'algorithm', fallback='HS256')

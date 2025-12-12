@@ -118,25 +118,69 @@ def test_database_connection():
         return False, f"Unexpected database error: {str(e)}"
 
 @contextmanager
-def get_db_connection():
+def get_db_connection(retries=3, timeout=30):
+    """
+    Get database connection with retry logic.
+    
+    Args:
+        retries: Number of retry attempts (default: 3)
+        timeout: Connection timeout in seconds (default: 30, longer for imports)
+    """
     connection = None
-    try:
-        connection = pymysql.connect(
-            host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
-            cursorclass=pymysql.cursors.DictCursor, port=DB_PORT, connect_timeout=5
-        )
-        yield connection
-    except pymysql.err.OperationalError as e:
-        error_code = e.args[0]
-        if error_code == 1045: raise DatabaseCredentialsError(f"Database credentials invalid: {str(e)}")
-        elif error_code == 2003: raise DatabaseConnectionError(f"Cannot connect to database server at {DB_HOST}:{DB_PORT}.")
-        elif error_code == 1049: raise DatabaseConnectionError(f"Database '{DB_NAME}' does not exist")
-        else: raise DatabaseConnectionError(f"Database connection failed: {str(e)}")
-    except Exception as e:
-        raise DatabaseConnectionError(f"Unexpected database error: {str(e)}")
-    finally:
-        if connection:
-            connection.close()
+    last_error = None
+    
+    for attempt in range(retries):
+        try:
+            connection = pymysql.connect(
+                host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
+                cursorclass=pymysql.cursors.DictCursor, port=DB_PORT, 
+                connect_timeout=timeout, read_timeout=timeout, write_timeout=timeout
+            )
+            yield connection
+            return  # Success - exit the retry loop
+        except pymysql.err.OperationalError as e:
+            last_error = e
+            error_code = e.args[0]
+            if error_code == 1045: 
+                raise DatabaseCredentialsError(f"Database credentials invalid: {str(e)}")
+            elif error_code == 2003: 
+                if attempt < retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    continue  # Retry connection
+                raise DatabaseConnectionError(f"Cannot connect to database server at {DB_HOST}:{DB_PORT}. Check DB_HOST environment variable.")
+            elif error_code == 1049: 
+                raise DatabaseConnectionError(f"Database '{DB_NAME}' does not exist")
+            elif error_code == 2013:  # Lost connection during query
+                if attempt < retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)
+                    continue  # Retry connection
+                raise DatabaseConnectionError(f"Lost connection to MySQL server during query. This may indicate database server issues or network problems.")
+            else: 
+                if attempt < retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)
+                    continue
+                raise DatabaseConnectionError(f"Database connection failed: {str(e)}")
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                import time
+                time.sleep(2 ** attempt)
+                continue
+            raise DatabaseConnectionError(f"Unexpected database error: {str(e)}")
+        finally:
+            if connection:
+                try:
+                    connection.close()
+                except:
+                    pass
+                connection = None
+    
+    # If we get here, all retries failed
+    if last_error:
+        raise DatabaseConnectionError(f"Failed to connect after {retries} attempts: {str(last_error)}")
 
 class SqlClient:
     def __init__(self):
@@ -148,9 +192,19 @@ class SqlClient:
             raise DatabaseConnectionError(f"Failed to initialize database client: {error}")
         print("Database connection verified successfully")
 
-    def _execute_query(self, query: str, params: tuple = None, fetch: str = None, is_transaction=False):
+    def _execute_query(self, query: str, params: tuple = None, fetch: str = None, is_transaction=False, timeout=30):
+        """
+        Execute a database query with retry logic.
+        
+        Args:
+            query: SQL query string
+            params: Query parameters tuple
+            fetch: 'one', 'all', or None
+            is_transaction: Whether to commit after execution
+            timeout: Connection timeout in seconds (longer for imports)
+        """
         try:
-            with get_db_connection() as db:
+            with get_db_connection(retries=3, timeout=timeout) as db:
                 with db.cursor() as cursor:
                     rows_affected = cursor.execute(query, params)
                     if fetch == 'one': result = cursor.fetchone()
