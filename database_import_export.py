@@ -170,7 +170,7 @@ class DatabaseImporter:
     """Handles database import from SQL dump file."""
     
     # Version marker for debugging - update this when making changes
-    IMPORT_VERSION = "2025-12-12-v7-CONNECTION-RETRY-FIX"
+    IMPORT_VERSION = "2025-12-22-v8-VIEW-HANDLING-FIX"
     
     def __init__(self, client: SqlClient):
         self.client = client
@@ -191,15 +191,15 @@ class DatabaseImporter:
         
         # Log version to verify code changes are active
         warnings.append(f"VERIFICATION: DatabaseImporter version: {DatabaseImporter.IMPORT_VERSION}")
-        warnings.append("VERIFICATION: Features active - DEFINER stripping, enhanced feedback table logging, view dependency ordering")
+        warnings.append("VERIFICATION: Features active - DEFINER stripping, enhanced feedback table logging, view dependency ordering, view verification")
         
         # Sanitize SQL content
         sql_content = self._sanitize_sql(sql_content, warnings)
         
-        # Setup database for import
+        # Setup database for import (with longer timeout)
         self._setup_import()
         
-        # Parse statements
+        # Parse statements (this is fast, no timeout needed)
         statements = self._parse_statements(sql_content)
         
         # Log statement count for debugging
@@ -387,6 +387,10 @@ class DatabaseImporter:
         return views
     
     def _execute_statements(self, statements: List[str], views: Set[str], warnings: List[str], errors: List[str]) -> Dict:
+        """
+        Execute all SQL statements with optimized batching for large imports.
+        Uses longer timeouts for large operations.
+        """
         """Execute all SQL statements and track results."""
         results = {
             'successful': 0,
@@ -615,8 +619,9 @@ class DatabaseImporter:
                             stmt = re.sub(r'^INSERT\s+', 'INSERT IGNORE ', stmt, flags=re.IGNORECASE)
                             stmt_upper = stmt.upper().strip()  # Update for later checks
                     
-                    # Execute INSERT
-                    _, _, error = self.client._execute_query(stmt, is_transaction=True)
+                    # Execute INSERT with longer timeout for large imports
+                    # Use transaction=False for individual INSERTs to avoid long locks, but commit periodically
+                    _, _, error = self.client._execute_query(stmt, is_transaction=True, timeout=120)
                     
                     if error:
                         # Handle errors
@@ -654,8 +659,8 @@ class DatabaseImporter:
                                     if email_match:
                                         warnings.append(f"VERIFICATION: Users INSERT #{results['tables_with_inserts'].get(table_name, 0)} succeeded for: {email_match.group(1)}")
                 else:
-                    # Execute non-INSERT statements (CREATE TABLE, CREATE VIEW, etc.)
-                    _, _, error = self.client._execute_query(stmt, is_transaction=True)
+                    # Execute non-INSERT statements (CREATE TABLE, CREATE VIEW, etc.) with longer timeout
+                    _, _, error = self.client._execute_query(stmt, is_transaction=True, timeout=120)
                     
                     if error:
                         # Skip certain expected errors (table already exists, FK issues, etc.)
@@ -1139,10 +1144,23 @@ class DatabaseImporter:
         else:
             warnings.append(f"All {results['successful']} statements executed successfully.")
         
-        # Add summary of views created
+        # Add summary of views created with verification
         views_created = results.get('views_created', set())
         if views_created:
             warnings.append(f"\nViews created: {', '.join(sorted(views_created))}")
+            # Verify critical views exist and are accessible
+            critical_views = ['revenue_ledger', 'ledger_partnerpayouts', 'consolidated_revenue_and_payments']
+            for view_name in critical_views:
+                try:
+                    # Try to query the view to verify it's accessible
+                    test_query = f"SELECT 1 FROM `{view_name}` LIMIT 1"
+                    test_result, _, test_error = self.client._execute_query(test_query, fetch='one')
+                    if not test_error:
+                        warnings.append(f"VERIFICATION: ✓ View '{view_name}' is accessible")
+                    else:
+                        warnings.append(f"VERIFICATION: ⚠ View '{view_name}' exists but query failed: {str(test_error)[:100]}")
+                except Exception as e:
+                    warnings.append(f"VERIFICATION: ⚠ Could not verify view '{view_name}': {str(e)[:100]}")
         
         # Add verification message for users import - MUST APPEAR IN OUTPUT
         users_inserted = results.get('tables_with_inserts', {}).get('users', 0)

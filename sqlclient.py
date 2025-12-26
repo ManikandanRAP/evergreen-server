@@ -130,14 +130,62 @@ def get_db_connection(retries=3, timeout=30):
     last_error = None
     
     for attempt in range(retries):
+        connection = None
         try:
             connection = pymysql.connect(
                 host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
                 cursorclass=pymysql.cursors.DictCursor, port=DB_PORT, 
                 connect_timeout=timeout, read_timeout=timeout, write_timeout=timeout
             )
-            yield connection
-            return  # Success - exit the retry loop
+            try:
+                yield connection
+                # If we get here, everything succeeded
+                return  # Success - exit the retry loop
+            except pymysql.err.OperationalError as query_error:
+                # Exception occurred during query execution (inside yield)
+                error_code = query_error.args[0] if query_error.args else None
+                error_msg = query_error.args[1] if len(query_error.args) > 1 else str(query_error)
+                print(f"ERROR in context manager (during yield): Code={error_code}, Message={error_msg}")
+                import traceback
+                traceback.print_exc()
+                if error_code == 2013:  # Lost connection during query
+                    # Close connection and retry
+                    if connection:
+                        try:
+                            connection.close()
+                        except:
+                            pass
+                        connection = None
+                    if attempt < retries - 1:
+                        import time
+                        time.sleep(2 ** attempt)
+                        continue  # Retry
+                    raise DatabaseConnectionError(f"Lost connection to MySQL server during query: {str(query_error)}")
+                else:
+                    # Other query errors - don't retry, just propagate
+                    raise
+            except pymysql.Error as query_error:
+                # Other pymysql errors
+                error_code = query_error.args[0] if query_error.args else None
+                error_msg = query_error.args[1] if len(query_error.args) > 1 else str(query_error)
+                print(f"ERROR in context manager (pymysql.Error): Code={error_code}, Message={error_msg}")
+                import traceback
+                traceback.print_exc()
+                raise
+            except Exception as query_error:
+                # Non-connection errors during query - propagate normally
+                print(f"ERROR in context manager (Exception): {type(query_error).__name__}: {str(query_error)}")
+                import traceback
+                traceback.print_exc()
+                raise
+            finally:
+                # Always close connection after yield completes (success or error)
+                if connection:
+                    try:
+                        connection.close()
+                    except:
+                        pass
+                    connection = None
         except pymysql.err.OperationalError as e:
             last_error = e
             error_code = e.args[0]
@@ -205,18 +253,37 @@ class SqlClient:
         """
         try:
             with get_db_connection(retries=3, timeout=timeout) as db:
-                with db.cursor() as cursor:
-                    rows_affected = cursor.execute(query, params)
-                    if fetch == 'one': result = cursor.fetchone()
-                    elif fetch == 'all': result = cursor.fetchall()
-                    else: result = None
-                    if is_transaction: db.commit()
-                    return result, rows_affected, None
+                try:
+                    with db.cursor() as cursor:
+                        rows_affected = cursor.execute(query, params)
+                        if fetch == 'one': result = cursor.fetchone()
+                        elif fetch == 'all': result = cursor.fetchall()
+                        else: result = None
+                        if is_transaction: db.commit()
+                        return result, rows_affected, None
+                except pymysql.Error as sql_error:
+                    # Log the actual SQL error with details
+                    error_code = sql_error.args[0] if sql_error.args else None
+                    error_msg = sql_error.args[1] if len(sql_error.args) > 1 else str(sql_error)
+                    print(f"SQL ERROR in _execute_query: Code={error_code}, Message={error_msg}")
+                    print(f"Query (first 200 chars): {query[:200]}")
+                    if params:
+                        print(f"Params: {params}")
+                    import traceback
+                    traceback.print_exc()
+                    return None, 0, sql_error
+                except Exception as query_error:
+                    print(f"UNEXPECTED ERROR in query execution: {type(query_error).__name__}: {str(query_error)}")
+                    import traceback
+                    traceback.print_exc()
+                    return None, 0, query_error
         except (DatabaseConnectionError, DatabaseCredentialsError) as e:
-            return None, 0, e
-        except pymysql.Error as e:
+            print(f"Database connection/credential error: {e}")
             return None, 0, e
         except Exception as e:
+            print(f"UNEXPECTED ERROR in _execute_query: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None, 0, e
 
     def get_all_podcasts(self):
@@ -835,13 +902,16 @@ class SqlClient:
                 invoice_date,
                 invoice_description,
                 invoice_amount,
+                invoice_doc_number,
                 evergreen_percentage,
                 partner_percentage,
                 evergreen_compensation,
                 partner_compensation,
                 tot_payment_amounts as effective_payment_received,
                 outstanding_balance,
-                partner_comp_waiting
+                partner_comp_waiting,
+                evergreen_outstanding,
+                partner_outstanding
             FROM revenue_ledger 
             WHERE vendor_qbo_id = %s
             """
@@ -854,13 +924,16 @@ class SqlClient:
                 invoice_date,
                 invoice_description,
                 invoice_amount,
+                invoice_doc_number,
                 evergreen_percentage,
                 partner_percentage,
                 evergreen_compensation,
                 partner_compensation,
                 tot_payment_amounts as effective_payment_received,
                 outstanding_balance,
-                partner_comp_waiting
+                partner_comp_waiting,
+                evergreen_outstanding,
+                partner_outstanding
             FROM revenue_ledger
             """
             params = None
@@ -870,43 +943,107 @@ class SqlClient:
         return ledger, error
 
     def get_partner_payouts(self, partner_id: str = None):
-        if partner_id:
-            sql = """
-            SELECT 
-                docnumber as bill_number,
-                txndate as bill_date,
-                vendor_qbo_name as partner_name,
-                bill_amount,
-                txnids_Payment as payment_id,
-                date_of_payment,
-                effective_billed_amount_paid,
-                billed_amount_outstanding,
-                show_qbo_name as show_name
-            FROM ledger_partnerpayouts 
-            WHERE vendor_qbo_id = %s
+        try:
+            # First verify the view exists
+            print(f"DEBUG: Checking if view 'ledger_partnerpayouts' exists...")
+            view_check_sql = """
+            SELECT COUNT(*) as view_exists 
+            FROM information_schema.views 
+            WHERE table_schema = DATABASE() 
+            AND table_name = 'ledger_partnerpayouts'
             """
-            params = (partner_id,)
-        else:
-            sql = """
-            SELECT 
-                docnumber as bill_number,
-                txndate as bill_date,
-                vendor_qbo_name as partner_name,
-                bill_amount,
-                txnids_Payment as payment_id,
-                date_of_payment,
-                effective_billed_amount_paid,
-                billed_amount_outstanding,
-                show_qbo_name as show_name
-            FROM ledger_partnerpayouts
-            """
-            params = None
+            view_check, _, view_error = self._execute_query(view_check_sql, fetch='one')
+            
+            if view_error:
+                print(f"ERROR: View check query failed: {view_error}")
+                return None, f"Failed to check if view exists: {str(view_error)}"
+            
+            if not view_check or view_check.get('view_exists', 0) == 0:
+                print(f"ERROR: View 'ledger_partnerpayouts' does not exist")
+                # Try to list all views to help debug
+                all_views_sql = "SELECT table_name FROM information_schema.views WHERE table_schema = DATABASE()"
+                all_views, _, _ = self._execute_query(all_views_sql, fetch='all')
+                view_names = [v.get('table_name', '') for v in (all_views or [])]
+                print(f"DEBUG: Available views: {view_names}")
+                return None, f"View 'ledger_partnerpayouts' does not exist. Available views: {', '.join(view_names) if view_names else 'none'}"
+            
+            print(f"DEBUG: View exists, proceeding with query...")
+            
+            if partner_id:
+                sql = """
+                SELECT 
+                    docnumber as bill_number,
+                    txndate as bill_date,
+                    bill_description,
+                    bill_amount,
+                    txnids_Payment as payment_id,
+                    date_of_payment,
+                    effective_billed_amount_paid,
+                    billed_amount_outstanding,
+                    show_qbo_name as show_name
+                FROM ledger_partnerpayouts 
+                WHERE vendor_qbo_id = %s
+                """
+                params = (partner_id,)
+                print(f"DEBUG: Querying with partner_id: {partner_id}")
+            else:
+                sql = """
+                SELECT 
+                    docnumber as bill_number,
+                    txndate as bill_date,
+                    bill_description,
+                    bill_amount,
+                    txnids_Payment as payment_id,
+                    date_of_payment,
+                    effective_billed_amount_paid,
+                    billed_amount_outstanding,
+                    show_qbo_name as show_name
+                FROM ledger_partnerpayouts
+                """
+                params = None
+                print(f"DEBUG: Querying all partner payouts")
 
-        ledger, _, error = self._execute_query(sql, params, fetch='all')
+            ledger, _, error = self._execute_query(sql, params, fetch='all')
+            
+            print(f"DEBUG: Query executed. Error: {error}, Result type: {type(ledger)}, Result length: {len(ledger) if ledger else 0}")
 
-        if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
-            raise error
-        return ledger, error
+            if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                print(f"ERROR: Database connection error: {error}")
+                raise error
+            
+            if error:
+                print(f"ERROR: Query error: {error}")
+                error_msg = str(error)
+                # Check for common SQL errors
+                if "doesn't exist" in error_msg.lower() or "unknown table" in error_msg.lower() or "table" in error_msg.lower() and "not found" in error_msg.lower():
+                    return None, f"View 'ledger_partnerpayouts' does not exist or is not accessible. SQL Error: {error_msg}"
+                return None, f"SQL Error querying partner payouts: {error_msg}"
+            
+            # Ensure we return a list, not a generator
+            if ledger is None:
+                print("WARNING: Query returned None")
+                return [], None
+            
+            if not isinstance(ledger, list):
+                print(f"DEBUG: Converting result to list (type: {type(ledger)})")
+                try:
+                    ledger = list(ledger) if ledger else []
+                except Exception as e:
+                    print(f"ERROR: Failed to convert to list: {e}")
+                    return None, f"Failed to process query results: {str(e)}"
+            
+            print(f"DEBUG: Returning {len(ledger)} records")
+            return ledger, None
+            
+        except (DatabaseConnectionError, DatabaseCredentialsError) as e:
+            print(f"ERROR: Database error in get_partner_payouts: {e}")
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            print(f"ERROR: Unexpected error in get_partner_payouts: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return None, f"Unexpected error querying partner payouts: {error_msg}"
 
 
     # ===== NEW (additions for feedback feature) =====

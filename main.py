@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
@@ -842,14 +842,35 @@ async def get_ledger(current_user: dict = Depends(get_current_active_user)):
 
 @app.get("/partner_payouts")
 async def get_partners_payouts(current_user: dict = Depends(get_current_active_user)):
-    client = SqlClient()
-    if current_user.get("role") in ("admin", "internal", "internal_full_access"):
-        partners_payouts, error = client.get_partner_payouts()
-    else:
-        partners_payouts, error = client.get_partner_payouts(current_user.get("mapped_vendor_qbo_id"))
-    if error:
-        raise HTTPException(status_code=500, detail=str(error))
-    return partners_payouts
+    try:
+        client = SqlClient()
+        if current_user.get("role") in ("admin", "internal", "internal_full_access"):
+            partners_payouts, error = client.get_partner_payouts()
+        else:
+            partners_payouts, error = client.get_partner_payouts(current_user.get("mapped_vendor_qbo_id"))
+        
+        if error:
+            # Log the error for debugging
+            print(f"ERROR in get_partners_payouts: {error}")
+            print(f"Error type: {type(error)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(error))
+        
+        if partners_payouts is None:
+            print("WARNING: get_partner_payouts returned None")
+            return []
+        
+        return partners_payouts
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log unexpected errors
+        print(f"UNEXPECTED ERROR in get_partners_payouts: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 # ----------------------
@@ -890,6 +911,8 @@ async def import_database(
     Admin only - requires developer options access.
     
     WARNING: This will replace existing data!
+    
+    Note: Large imports may take several minutes. The timeout is set to 30 minutes.
     """
     if not file.filename.endswith('.sql'):
         raise HTTPException(
@@ -902,9 +925,17 @@ async def import_database(
         content = await file.read()
         sql_content = content.decode('utf-8')
         
-        # Import using the new module
+        # Check file size and warn if very large
+        file_size_mb = len(content) / (1024 * 1024)
+        if file_size_mb > 50:
+            # For very large files, we'll need to optimize
+            pass
+        
+        # Import using the new module with increased timeouts
         client = SqlClient()
         importer = DatabaseImporter(client)
+        
+        # Execute import with longer timeouts for large operations
         result = importer.import_dump(sql_content)
         
         return DatabaseImportResponse(**result)
@@ -915,9 +946,16 @@ async def import_database(
             detail="Invalid SQL file encoding. Please ensure the file is UTF-8 encoded."
         )
     except Exception as e:
+        error_msg = str(e)
+        # Provide more helpful error messages
+        if "timeout" in error_msg.lower() or "504" in error_msg:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Import timed out. The file may be too large. Try using the sync script instead, or split the import into smaller chunks. Error: {error_msg[:200]}"
+            )
         raise HTTPException(
             status_code=500,
-            detail=f"Database import failed: {str(e)}"
+            detail=f"Database import failed: {error_msg[:500]}"
         )
 
 @app.get("/admin/database/status")

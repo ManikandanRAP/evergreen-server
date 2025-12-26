@@ -17,5 +17,7 @@ COPY . .
 EXPOSE 8000
 
 # Define the command to run the application
-# Increase timeout for long-running operations like database imports
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "1200"]
+# Increase timeout for long-running operations like database imports (30 minutes)
+# timeout-keep-alive: How long to wait for requests to complete
+# timeout-graceful-shutdown: How long to wait for graceful shutdown
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "1800", "--timeout-graceful-shutdown", "30"]
