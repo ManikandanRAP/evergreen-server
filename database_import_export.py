@@ -343,7 +343,7 @@ class DatabaseImporter:
         views = set()
         
         # Known view names that might be exported as tables
-        known_views = ['consolidated_revenue_and_payments', 'ledger_partnerpayouts', 'revenue_ledger']
+        known_views = ['consolidated_revenue_and_payments', 'ledger_partnerpayouts', 'ledger_partnerpayouts_with_filter', 'revenue_ledger']
         
         # Detect views from CREATE VIEW statements in dump
         create_view_pattern = r'CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+[`"]?([a-zA-Z0-9_]+)[`"]?'
@@ -690,16 +690,21 @@ class DatabaseImporter:
                     errors.append(str(e)[:200])
         
         # Now execute CREATE VIEW statements in dependency order
-        # consolidated_revenue_and_payments depends on ledger_partnerpayouts and revenue_ledger
-        # So execute ledger_partnerpayouts and revenue_ledger first, then consolidated_revenue_and_payments
+        # View dependency order:
+        # - ledger_partnerpayouts_with_filter depends on ledger_partnerpayouts and revenue_ledger
+        # - consolidated_revenue_and_payments depends on ledger_partnerpayouts and revenue_ledger
+        # So create base views first, then the filtered view, then the consolidated view
         if view_statements:
-            # Sort views by dependency: consolidated_revenue_and_payments should be last
+            # Sort views by dependency order so derived views are created after their inputs
             def view_priority(item):
                 stmt_idx, stmt, view_name = item
-                if view_name == 'consolidated_revenue_and_payments':
-                    return 2  # Execute last
-                else:
-                    return 1  # Execute first
+                priority_map = {
+                    'ledger_partnerpayouts': 1,
+                    'revenue_ledger': 1,
+                    'ledger_partnerpayouts_with_filter': 2,
+                    'consolidated_revenue_and_payments': 3,
+                }
+                return priority_map.get(view_name, 2)
             
             view_statements_sorted = sorted(view_statements, key=view_priority)
             
@@ -1149,7 +1154,7 @@ class DatabaseImporter:
         if views_created:
             warnings.append(f"\nViews created: {', '.join(sorted(views_created))}")
             # Verify critical views exist and are accessible
-            critical_views = ['revenue_ledger', 'ledger_partnerpayouts', 'consolidated_revenue_and_payments']
+            critical_views = ['revenue_ledger', 'ledger_partnerpayouts', 'ledger_partnerpayouts_with_filter', 'consolidated_revenue_and_payments']
             for view_name in critical_views:
                 try:
                     # Try to query the view to verify it's accessible

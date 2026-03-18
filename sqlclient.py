@@ -944,28 +944,29 @@ class SqlClient:
 
     def get_partner_payouts(self, partner_id: str = None):
         try:
+            partner_payouts_view = "ledger_partnerpayouts_with_filter"
             # First verify the view exists
-            print(f"DEBUG: Checking if view 'ledger_partnerpayouts' exists...")
+            print(f"DEBUG: Checking if view '{partner_payouts_view}' exists...")
             view_check_sql = """
             SELECT COUNT(*) as view_exists 
             FROM information_schema.views 
             WHERE table_schema = DATABASE() 
-            AND table_name = 'ledger_partnerpayouts'
+            AND table_name = %s
             """
-            view_check, _, view_error = self._execute_query(view_check_sql, fetch='one')
+            view_check, _, view_error = self._execute_query(view_check_sql, (partner_payouts_view,), fetch='one')
             
             if view_error:
                 print(f"ERROR: View check query failed: {view_error}")
                 return None, f"Failed to check if view exists: {str(view_error)}"
             
             if not view_check or view_check.get('view_exists', 0) == 0:
-                print(f"ERROR: View 'ledger_partnerpayouts' does not exist")
+                print(f"ERROR: View '{partner_payouts_view}' does not exist")
                 # Try to list all views to help debug
                 all_views_sql = "SELECT table_name FROM information_schema.views WHERE table_schema = DATABASE()"
                 all_views, _, _ = self._execute_query(all_views_sql, fetch='all')
                 view_names = [v.get('table_name', '') for v in (all_views or [])]
                 print(f"DEBUG: Available views: {view_names}")
-                return None, f"View 'ledger_partnerpayouts' does not exist. Available views: {', '.join(view_names) if view_names else 'none'}"
+                return None, f"View '{partner_payouts_view}' does not exist. Available views: {', '.join(view_names) if view_names else 'none'}"
             
             print(f"DEBUG: View exists, proceeding with query...")
             
@@ -980,9 +981,11 @@ class SqlClient:
                     date_of_payment,
                     effective_billed_amount_paid,
                     billed_amount_outstanding,
-                    show_qbo_name as show_name
-                FROM ledger_partnerpayouts 
+                    show_qbo_name as show_name,
+                    vendor_qbo_name
+                FROM ledger_partnerpayouts_with_filter
                 WHERE vendor_qbo_id = %s
+                  AND COALESCE(exclude_bills, 0) = 0
                 """
                 params = (partner_id,)
                 print(f"DEBUG: Querying with partner_id: {partner_id}")
@@ -997,8 +1000,10 @@ class SqlClient:
                     date_of_payment,
                     effective_billed_amount_paid,
                     billed_amount_outstanding,
-                    show_qbo_name as show_name
-                FROM ledger_partnerpayouts
+                    show_qbo_name as show_name,
+                    vendor_qbo_name
+                FROM ledger_partnerpayouts_with_filter
+                WHERE COALESCE(exclude_bills, 0) = 0
                 """
                 params = None
                 print(f"DEBUG: Querying all partner payouts")
@@ -1016,7 +1021,7 @@ class SqlClient:
                 error_msg = str(error)
                 # Check for common SQL errors
                 if "doesn't exist" in error_msg.lower() or "unknown table" in error_msg.lower() or "table" in error_msg.lower() and "not found" in error_msg.lower():
-                    return None, f"View 'ledger_partnerpayouts' does not exist or is not accessible. SQL Error: {error_msg}"
+                    return None, f"View '{partner_payouts_view}' does not exist or is not accessible. SQL Error: {error_msg}"
                 return None, f"SQL Error querying partner payouts: {error_msg}"
             
             # Ensure we return a list, not a generator

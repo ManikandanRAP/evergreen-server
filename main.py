@@ -36,6 +36,14 @@ from models import (
     BaseModel,
     UsernameCheckRequest,
     UsernameCheckResponse,
+    GENRE_MAP,
+    MEDIA_TYPE_MAP,
+    REL_LEVEL_MAP,
+    SHOW_TYPE_MAP,
+    CADENCE_MAP,
+    RANKING_CATEGORY_MAP,
+    REGION_MAP,
+    EDU_MAP,
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
@@ -486,34 +494,66 @@ def check_single_duplicate(show_data: ShowCreate, current_user: User = Depends(g
 
 @app.post("/podcasts/bulk-import-with-actions")
 def bulk_create_podcasts_with_actions(
-    shows_data: List[ShowCreate], 
+    shows_data: List[ShowCreate],
     actions: List[dict],  # [{"title": "Show Name", "action": "create|update|skip"}]
-    admin: User = Depends(get_admin_user)
+    admin: User = Depends(get_admin_user),
 ):
     """Bulk import with user-specified actions for duplicates"""
     client = SqlClient()
-    
+
+    # QBO class list from allclass: name -> id (same source as manual create dropdown)
+    allclass_items, ac_err = client.get_allclass_items()
+    valid_qbo_names = set()
+    qbo_name_to_id = {}
+    if not ac_err and allclass_items:
+        for item in allclass_items:
+            name = item.get("name")
+            id_ = item.get("id")
+            if name is not None:
+                valid_qbo_names.add(name.strip())
+                if id_ is not None:
+                    qbo_name_to_id[name.strip()] = id_
+
     # Create a mapping of actions by title
     action_map = {action["title"]: action["action"] for action in actions}
-    
+
     successful_imports = 0
     failed_imports = 0
     updated_imports = 0
     skipped_imports = 0
     errors = []
-    
+    warnings = []
+
     for i, show_data in enumerate(shows_data):
         if not show_data.title or not show_data.title.strip():
             failed_imports += 1
             errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
             continue
-        
+
         action = action_map.get(show_data.title, "create")
-        
+
         if action == "skip":
             skipped_imports += 1
             continue
-        
+
+        # QBO: match CSV to allclass (same as manual create — name must exist; id comes from allclass)
+        payload = show_data
+        qbo_name = (show_data.qbo_show_name or "").strip()
+        if qbo_name:
+            if qbo_name in valid_qbo_names:
+                # Resolve id from allclass so stored (name, id) always match the table
+                qbo_id = qbo_name_to_id.get(qbo_name)
+                payload = show_data.model_copy(update={"qbo_show_name": qbo_name, "qbo_show_id": qbo_id})
+            else:
+                payload = show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
+                warnings.append(
+                    f"Row {i + 2} ('{show_data.title}'): There are no matching QBO class Names to the show '{show_data.qbo_show_name}' specified. The show has been saved with blank QBO Name for you to update later, by editing the show and select the correct QBO Name from the dropdown."
+                )
+        else:
+            # CSV left QBO blank or empty — save as empty (don't trust CSV id alone)
+            if show_data.qbo_show_id is not None:
+                payload = show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
+
         if action == "update":
             # Check if show exists for update
             existing_show, error = client.check_duplicate_show(show_data.title)
@@ -521,33 +561,31 @@ def bulk_create_podcasts_with_actions(
                 failed_imports += 1
                 errors.append(f"Row {i + 2} ('{show_data.title}'): Error checking for existing show - {str(error)}")
                 continue
-            
+
             if not existing_show:
                 failed_imports += 1
                 errors.append(f"Row {i + 2} ('{show_data.title}'): Show not found for update")
                 continue
-            
+
             # Update existing show
-            updated_show, error = client.update_podcast(existing_show['id'], show_data)
+            updated_show, error = client.update_podcast(existing_show["id"], payload)
             if error:
                 failed_imports += 1
                 errors.append(f"Row {i + 2} ('{show_data.title}'): Update failed - {str(error)}")
             else:
                 updated_imports += 1
-        
+
         elif action == "create":
             # Create new show (with duplicate check)
-            new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
+            new_show, error = client.create_podcast(payload, user_name=admin.get("name"), user_id=admin.get("id"))
             if error:
                 failed_imports += 1
                 errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
             else:
                 successful_imports += 1
-    
-    total_processed = successful_imports + updated_imports + skipped_imports + failed_imports
-    
+
     message = f"Bulk import completed. Created: {successful_imports}, Updated: {updated_imports}, Skipped: {skipped_imports}, Failed: {failed_imports}"
-    
+
     return {
         "message": message,
         "total": len(shows_data),
@@ -556,6 +594,7 @@ def bulk_create_podcasts_with_actions(
         "skipped": skipped_imports,
         "failed": failed_imports,
         "errors": errors,
+        "warnings": warnings,
     }
 
 class ShowFilterParams:
@@ -740,6 +779,23 @@ def list_allclass(admin: User = Depends(get_admin_user)) -> List[Dict[str, Any]]
     if err:
         raise HTTPException(status_code=500, detail=str(err))
     return items
+
+
+@app.get("/show-form-options")
+def get_show_form_options(current_user: User = Depends(get_current_active_user)) -> Dict[str, List[str]]:
+    """Return all dropdown options for the Create/Edit Show form. Single source of truth from server."""
+    return {
+        "genres": sorted(set(GENRE_MAP.values())),
+        "showTypes": list(SHOW_TYPE_MAP.values()),
+        "mediaTypes": ["Video", "Audio", "Both"],
+        "relationshipLevels": ["Strong", "Medium", "Weak"],
+        "rankingCategories": list(RANKING_CATEGORY_MAP.values()),
+        "cadences": ["Daily", "Weekly", "Biweekly", "Monthly", "Ad hoc"],
+        "regions": list(REGION_MAP.values()),
+        "educationLevels": list(EDU_MAP.values()),
+        "ageDemographics": ["18-24", "25-34", "35-44", "45-54", "55+"],
+    }
+
 
 # ----------------------
 # Split management (reads allowed for all logged-in roles, writes admin-only)

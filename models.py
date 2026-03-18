@@ -13,6 +13,7 @@ def _norm_key(v: Optional[str]) -> str:
     if v is None:
         return ""
     v = str(v).strip()
+    v = re.sub(r"[-–—]+", " ", v)  # treat hyphens and dashes as spaces
     v = re.sub(r"\s+", " ", v)  # collapse internal whitespace
     return v.lower()
 
@@ -33,6 +34,7 @@ EDU_MAP = {
     "postgraduate": "Postgraduate",
 }
 
+# Canonical genres only (no shortcuts). Client uses universal partial-match suggestion for typos/variants.
 GENRE_MAP = {
     "history": "History",
     "human resources": "Human Resources",
@@ -51,9 +53,12 @@ GENRE_MAP = {
     "literature": "Literature",
     "sports": "Sports",
     "pop culture": "Pop Culture",
-    "arts": "Arts",
+    "arts & culture": "Arts & Culture",
     "business": "Business",
     "philosophy": "Philosophy",
+    "self help": "Self-Help",
+    "marketing": "Marketing",
+    "law": "Law",
 }
 
 
@@ -332,7 +337,7 @@ class ShowCreate(BaseModel):
         key = _norm_key(v)
         if key in GENRE_MAP:
             return GENRE_MAP[key]
-        raise ValueError("Invalid value for 'genre_name'.")
+        raise ValueError(f"Invalid value for 'genre_name': '{v}'. Not in allowed list. See Import Guide for allowed genres.")
     @field_validator("start_date", mode="before")
     @classmethod
     def _normalize_start_date(cls, v):
@@ -560,7 +565,7 @@ class ShowUpdate(BaseModel):
         key = _norm_key(v)
         if key in GENRE_MAP:
             return GENRE_MAP[key]
-        raise ValueError("Invalid value for 'genre_name'.")
+        raise ValueError(f"Invalid value for 'genre_name': '{v}'. Not in allowed list. See Import Guide for allowed genres.")
 
 
 
