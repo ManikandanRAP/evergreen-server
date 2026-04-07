@@ -1,10 +1,10 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from typing import Optional, List, Any, Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 import io
 import re
@@ -47,6 +47,35 @@ from models import (
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
+
+# ----------------------
+# Developer live logs (in-memory; per-process)
+# ----------------------
+DEV_LOG_MAX = 500
+_dev_log_seq_by_email: Dict[str, int] = {}
+_dev_logs_by_email: Dict[str, List[Dict[str, Any]]] = {}
+
+def _devlog(email: Optional[str], type_: str, message: str, details: Optional[str] = None):
+    if not email:
+        return
+    seq = _dev_log_seq_by_email.get(email, 0) + 1
+    _dev_log_seq_by_email[email] = seq
+    entry: Dict[str, Any] = {
+        "seq": seq,
+        "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+        "type": type_,
+        "message": message,
+    }
+    if details:
+        entry["details"] = details
+    arr = _dev_logs_by_email.setdefault(email, [])
+    arr.append(entry)
+    if len(arr) > DEV_LOG_MAX:
+        _dev_logs_by_email[email] = arr[-DEV_LOG_MAX:]
+
+class DeveloperLogsResponse(BaseModel):
+    logs: List[Dict[str, Any]]
+    next_after: int
 from config import SECRET_KEY, ALGORITHM
 
 app = FastAPI(
@@ -71,6 +100,24 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 # ----------------------
 # Auth helpers
 # ----------------------
+async def get_token_email(token: str = Depends(oauth2_scheme)) -> str:
+    """
+    Decode JWT and return email without touching the database.
+    This is required for endpoints that must work while the DB is being replaced.
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: Optional[str] = payload.get("sub")
+        if not email:
+            raise JWTError("missing sub")
+        return email
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -941,26 +988,103 @@ class DatabaseImportResponse(BaseModel):
     warnings: Optional[List[str]] = None
     executed_at: str
 
+class DatabaseImportJobStartResponse(BaseModel):
+    job_id: str
+    status: str  # queued|running|succeeded|failed
+    message: str
+    queued_at: str
+
+class DatabaseImportJobStatusResponse(BaseModel):
+    job_id: str
+    status: str  # queued|running|succeeded|failed
+    message: str
+    queued_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    result: Optional[DatabaseImportResponse] = None
+    error: Optional[str] = None
+
+# In-memory import job registry (per-process).
+_import_jobs: Dict[str, Dict[str, Any]] = {}
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        # stored as isoformat with timezone
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+async def _run_import_job(job_id: str, *, dump_bytes: bytes, filename: str, mode: str, confirm: Optional[str], admin: User):
+    # Mark as running
+    job = _import_jobs.get(job_id)
+    if not job:
+        return
+    job["status"] = "running"
+    job["started_at"] = datetime.now(timezone.utc).isoformat()
+    job["message"] = f"Import running ({mode})"
+    try:
+        client = SqlClient()
+        importer = DatabaseImporter(client)
+        # Run blocking import in a worker thread to avoid blocking event loop.
+        import asyncio
+        # Hard timeout so a job can't get stuck "running" forever.
+        # (docker-exec has its own timeouts, but this is an extra safety net.)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                importer.import_dump_full_replace,
+                dump_bytes,
+                filename,
+                mode,
+                {"name": getattr(admin, "name", None), "email": getattr(admin, "email", None)},
+                confirm,
+            ),
+            timeout=60 * 40,  # 40 minutes
+        )
+        job["status"] = "succeeded" if result.get("success") else "failed"
+        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+        job["message"] = result.get("message") or "Import finished"
+        job["result"] = result
+        if result.get("success"):
+            _devlog(admin.get("email"), "success", f"Database import finished ({mode})", result.get("message"))
+        else:
+            _devlog(admin.get("email"), "error", f"Database import finished with errors ({mode})", result.get("message"))
+    except Exception as e:
+        job["status"] = "failed"
+        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+        job["message"] = "Import failed"
+        job["error"] = str(e)[:800]
+        _devlog(admin.get("email"), "error", "Database import failed", str(e)[:500])
+
 @app.get("/admin/database/export")
-async def export_database(admin: User = Depends(get_admin_user)):
+async def export_database(
+    admin: User = Depends(get_admin_user),
+):
     """
     Export the current database as a SQL dump file.
     Admin only - requires developer options access.
     """
     try:
+        _devlog(admin.get("email"), "command", "Database export started")
         client = SqlClient()
         exporter = DatabaseExporter(client)
-        return exporter.export(admin)
+        resp = exporter.export(admin)
+        _devlog(admin.get("email"), "success", "Database export finished")
+        return resp
     except Exception as e:
+        _devlog(admin.get("email"), "error", "Database export failed", str(e)[:500])
         raise HTTPException(
             status_code=500,
             detail=f"Database export failed: {str(e)}"
         )
 
-@app.post("/admin/database/import", response_model=DatabaseImportResponse)
+@app.post("/admin/database/import")
 async def import_database(
     file: UploadFile = File(...),
-    admin: User = Depends(get_admin_user)
+    mode: str = Form("legacy_python"),
+    confirm: Optional[str] = Form(None),
+    admin: User = Depends(get_admin_user),
 ):
     """
     Import a SQL dump file to restore/replace the current database.
@@ -977,24 +1101,48 @@ async def import_database(
         )
     
     try:
-        # Read the uploaded file
-        content = await file.read()
-        sql_content = content.decode('utf-8')
-        
-        # Check file size and warn if very large
-        file_size_mb = len(content) / (1024 * 1024)
-        if file_size_mb > 50:
-            # For very large files, we'll need to optimize
-            pass
-        
-        # Import using the new module with increased timeouts
+        _devlog(admin.get("email"), "command", f"Database import started: {file.filename}")
         client = SqlClient()
         importer = DatabaseImporter(client)
-        
-        # Execute import with longer timeouts for large operations
-        result = importer.import_dump(sql_content)
-        
-        return DatabaseImportResponse(**result)
+
+        # Legacy path: decode and run Python importer (slow, but works on some envs)
+        if mode == "legacy_python":
+            content = await file.read()
+            sql_content = content.decode('utf-8')
+            result = importer.import_dump(sql_content)
+            _devlog(admin.get("email"), "success", "Database import finished (legacy_python)", result.get("message"))
+            return DatabaseImportResponse(**result)
+
+        # Fast full-replace modes can exceed proxy timeouts; run as an async job and return immediately.
+        content = await file.read()
+        job_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        _import_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "message": f"Import queued ({mode})",
+            "queued_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "admin_email": admin.get("email"),
+            "filename": file.filename,
+            "mode": mode,
+        }
+        # Kick off background task (non-blocking)
+        import asyncio
+        asyncio.create_task(_run_import_job(job_id, dump_bytes=content, filename=file.filename, mode=mode, confirm=confirm, admin=admin))
+        return Response(
+            content=DatabaseImportJobStartResponse(
+                job_id=job_id,
+                status="queued",
+                message=f"Import started ({mode}). Track progress via job id.",
+                queued_at=now,
+            ).model_dump_json(),
+            media_type="application/json",
+            status_code=202,
+        )
         
     except UnicodeDecodeError:
         raise HTTPException(
@@ -1003,6 +1151,7 @@ async def import_database(
         )
     except Exception as e:
         error_msg = str(e)
+        _devlog(admin.get("email"), "error", "Database import failed", error_msg[:500])
         # Provide more helpful error messages
         if "timeout" in error_msg.lower() or "504" in error_msg:
             raise HTTPException(
@@ -1014,8 +1163,44 @@ async def import_database(
             detail=f"Database import failed: {error_msg[:500]}"
         )
 
+@app.get("/admin/database/import/jobs/{job_id}", response_model=DatabaseImportJobStatusResponse)
+async def get_import_job_status(
+    job_id: str,
+    email: str = Depends(get_token_email),
+):
+    job = _import_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    # Basic isolation: only allow the same admin email to view their job
+    if job.get("admin_email") and email and job.get("admin_email") != email:
+        raise HTTPException(status_code=403, detail="Not allowed to view this import job")
+    # If a job is "running" for too long (e.g. process got wedged), mark it failed.
+    if (job.get("status") == "running") and not job.get("finished_at"):
+        started_at = _parse_iso(job.get("started_at"))
+        if started_at:
+            elapsed_s = (datetime.now(timezone.utc) - started_at).total_seconds()
+            if elapsed_s > 60 * 45:  # 45 minutes
+                job["status"] = "failed"
+                job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                job["message"] = "Import failed (stale job)"
+                job["error"] = "Job exceeded maximum runtime. The server likely got stuck; please retry the import."
+
+    result = job.get("result")
+    return DatabaseImportJobStatusResponse(
+        job_id=job_id,
+        status=job.get("status") or "queued",
+        message=job.get("message") or "",
+        queued_at=job.get("queued_at") or "",
+        started_at=job.get("started_at"),
+        finished_at=job.get("finished_at"),
+        result=(DatabaseImportResponse(**result) if isinstance(result, dict) else None),
+        error=job.get("error"),
+    )
+
 @app.get("/admin/database/status")
-async def get_database_status(admin: User = Depends(get_admin_user)):
+async def get_database_status(
+    admin: User = Depends(get_admin_user),
+):
     """
     Get current database status and statistics.
     Admin only.
@@ -1025,6 +1210,7 @@ async def get_database_status(admin: User = Depends(get_admin_user)):
     client = SqlClient()
     
     try:
+        _devlog(admin.get("email"), "info", "Database status requested")
         # Get database name from config instead of DATABASE() function
         database_name = DB_NAME
         

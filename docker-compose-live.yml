@@ -3,6 +3,7 @@ services:
   db:
     image: mysql:8.0
     container_name: evergreen-mysql
+    user: "0:0"
     environment:
       - MYSQL_ROOT_PASSWORD=rootpassword
       - MYSQL_DATABASE=evergreen
@@ -16,7 +17,7 @@ services:
     networks:
       - evergreen_net
     restart: unless-stopped
-    command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
+    entrypoint: ["/bin/bash", "-lc", "mkdir -p /var/lib/mysql /var/run/mysqld && chown -R mysql:mysql /var/lib/mysql /var/run/mysqld && exec docker-entrypoint.sh mysqld --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password"]
   backend:
     build: .
     container_name: evergreen-server-backend
@@ -29,9 +30,12 @@ services:
       - DB_NAME=evergreen
       - DB_PORT=3306
       - SECRET_KEY=a56355d68f0a1b04226cfae1768177aec80bf730faec8092b87af36d79791524
+      - MYSQL_CONTAINER_NAME=evergreen-mysql
     networks:
       - evergreen_net
     restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     # Add these for debugging
     stdin_open: true
     tty: true

@@ -4,6 +4,13 @@ Handles SQL dump file import and export functionality.
 """
 import re
 import io
+import os
+import tempfile
+import subprocess
+import time
+import shutil
+import socket
+import json
 from datetime import datetime, timezone
 from typing import List, Dict, Set, Optional, Tuple
 from fastapi import HTTPException, UploadFile
@@ -161,6 +168,9 @@ class DatabaseExporter:
                     if not view_error and create_view_result and len(create_view_result) > 0:
                         create_view_stmt = create_view_result[0].get('Create View', '')
                         if create_view_stmt:
+                            # Make exports portable: strip DEFINER so imports work across environments/users
+                            create_view_stmt = re.sub(r"DEFINER\s*=\s*`[^`]+`@`[^`]+`\s*", "", create_view_stmt, flags=re.IGNORECASE)
+                            create_view_stmt = re.sub(r"DEFINER\s*=\s*'[^']+'@'[^']+'\s*", "", create_view_stmt, flags=re.IGNORECASE)
                             sql_parts.append(f"\n-- View structure for `{view_name}`")
                             sql_parts.append(f"DROP VIEW IF EXISTS `{view_name}`;")
                             sql_parts.append(f"{create_view_stmt};\n")
@@ -231,6 +241,781 @@ class DatabaseImporter:
         report = self._generate_report(results, warnings, errors, views)
         
         return report
+
+    def import_dump_full_replace(
+        self,
+        dump_bytes: bytes,
+        filename: str,
+        mode: str,
+        admin_user: dict,
+        confirm: Optional[str] = None,
+    ) -> Dict:
+        """
+        Full replace import using mysql CLI for speed and reliability.
+
+        Modes:
+          - full_replace_fast: drop/create DB then bulk import
+          - full_replace_safe: same as fast (backup/extra guardrails handled by caller)
+        """
+        started = time.time()
+        warnings: List[str] = []
+        errors: List[str] = []
+
+        warnings.append(f"VERIFICATION: DatabaseImporter version: {DatabaseImporter.IMPORT_VERSION}")
+        warnings.append("VERIFICATION: Features active - DEFINER stripping, blocked GRANT/CREATE DATABASE, full-replace CLI import")
+
+        if mode not in ("full_replace_fast", "full_replace_safe"):
+            raise HTTPException(status_code=400, detail=f"Invalid import mode: {mode}")
+
+        if mode == "full_replace_safe":
+            warnings.append("VERIFICATION: Safe mode active - extra guardrails enabled")
+
+        # Sanitize dump content:
+        # - block GRANT/REVOKE/CREATE DATABASE/DROP DATABASE (keep the file portable)
+        # - strip DEFINER from CREATE VIEW statements
+        # Do this as text to match existing exporter encoding.
+        try:
+            sql_text = dump_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid SQL file encoding. Please ensure the file is UTF-8 encoded.")
+
+        # Prefer Docker-exec into the MySQL container (no mysql client needed in backend image).
+        docker_sock = os.environ.get("DOCKER_HOST", "/var/run/docker.sock")
+        mysql_container = os.environ.get("MYSQL_CONTAINER_NAME") or "evergreen-mysql"
+        if os.path.exists(docker_sock):
+            try:
+                return self._import_via_docker_exec(
+                    sql_text=sql_text,
+                    filename=filename,
+                    mode=mode,
+                    warnings=warnings,
+                    errors=errors,
+                    docker_sock_path=docker_sock,
+                    mysql_container=mysql_container,
+                )
+            except Exception as e:
+                # In Docker environments the legacy Python importer is both slow and can leave the DB in a broken state.
+                # Fail fast with a clear error instead of falling back.
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Docker-exec import failed: {type(e).__name__}: {str(e)[:500]}",
+                )
+
+        # Fallback: legacy Python importer (slower; may fail on server InnoDB state)
+        legacy_report = self.import_dump(sql_text)
+        legacy_report["warnings"] = warnings + (legacy_report.get("warnings") or [])
+        return legacy_report
+
+        # Block dangerous commands (same semantics as legacy sanitizer)
+        dangerous_patterns = [
+            "DROP DATABASE",
+            "CREATE DATABASE",
+            "GRANT ",
+            "REVOKE ",
+        ]
+        for pattern in dangerous_patterns:
+            if pattern.upper() in sql_text.upper():
+                warnings.append(f"SQL file contains '{pattern}' command which has been blocked for safety.")
+                sql_text = sql_text.replace(pattern, f"-- BLOCKED: {pattern}")
+                sql_text = sql_text.replace(pattern.lower(), f"-- BLOCKED: {pattern.lower()}")
+
+        # Strip DEFINER (covers backtick and quoted variants)
+        definer_patterns = [
+            r"DEFINER\s*=\s*`[^`]+`@`[^`]+`\s*",
+            r"DEFINER\s*=\s*'[^']+'@'[^']+'\s*",
+            r"DEFINER\s*=\s*[^ ]+@[^ ]+\s*",
+        ]
+        before = sql_text
+        for pat in definer_patterns:
+            sql_text = re.sub(pat, "", sql_text, flags=re.IGNORECASE)
+        if sql_text != before:
+            warnings.append("VERIFICATION: Stripped DEFINER clauses from dump")
+
+        # Write sanitized dump to a temp file (faster than statement-by-statement execution)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False, encoding="utf-8") as tmp:
+                tmp_path = tmp.name
+                tmp.write(sql_text)
+
+            # Full replace: drop + create DB
+            from config import DB_HOST, DB_USER, DB_PASSWORD, DB_PORT, DB_NAME
+
+            env = os.environ.copy()
+            env["MYSQL_PWD"] = DB_PASSWORD or ""
+
+            # Safe mode: create a server-side backup before destructive actions (best-effort)
+            backup_path = None
+            if mode == "full_replace_safe":
+                mysqldump_bin = shutil.which("mysqldump")
+                if not mysqldump_bin:
+                    warnings.append("VERIFICATION: ⚠ 'mysqldump' not found; skipping pre-import backup.")
+                else:
+                    safe_ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                    backup_path = os.path.join(tempfile.gettempdir(), f"preimport-backup-{safe_ts}.sql")
+                    dump_args = [
+                        mysqldump_bin,
+                        "-h",
+                        str(DB_HOST),
+                        "-P",
+                        str(DB_PORT),
+                        "-u",
+                        str(DB_USER),
+                        "--protocol=tcp",
+                        "--single-transaction",
+                        "--routines",
+                        "--triggers",
+                        "--events",
+                        str(DB_NAME),
+                    ]
+                    try:
+                        with open(backup_path, "wb") as bf:
+                            dump_proc = subprocess.run(dump_args, stdout=bf, stderr=subprocess.PIPE, env=env, timeout=60 * 10)
+                        if dump_proc.returncode == 0 and os.path.exists(backup_path) and os.path.getsize(backup_path) > 0:
+                            warnings.append(f"VERIFICATION: Pre-import backup created at {backup_path}")
+                        else:
+                            stderr = (dump_proc.stderr or b"").decode("utf-8", errors="ignore")[:300]
+                            warnings.append(f"VERIFICATION: ⚠ Pre-import backup failed (continuing): {stderr}")
+                    except Exception as e:
+                        warnings.append(f"VERIFICATION: ⚠ Pre-import backup failed (continuing): {type(e).__name__}: {str(e)[:200]}")
+
+            # Use mysql CLI to avoid pymysql losing connection during huge DDL/DML
+            def run_mysql(args: List[str], stdin_path: Optional[str] = None, timeout_s: int = 60 * 30) -> subprocess.CompletedProcess:
+                if stdin_path:
+                    with open(stdin_path, "rb") as f:
+                        return subprocess.run(args, stdin=f, capture_output=True, env=env, timeout=timeout_s)
+                return subprocess.run(args, capture_output=True, env=env, timeout=timeout_s)
+
+            base_args = [
+                mysql_bin,
+                "-h",
+                str(DB_HOST),
+                "-P",
+                str(DB_PORT),
+                "-u",
+                str(DB_USER),
+                "--protocol=tcp",
+            ]
+
+            # Drop/create database as a clean slate (prevents tablespace exists from partial previous imports)
+            drop_create_sql = (
+                f"SET FOREIGN_KEY_CHECKS=0; "
+                f"DROP DATABASE IF EXISTS `{DB_NAME}`; "
+                f"CREATE DATABASE `{DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; "
+                f"SET FOREIGN_KEY_CHECKS=1;"
+            )
+            proc = run_mysql(base_args + ["-e", drop_create_sql], timeout_s=300)
+            if proc.returncode != 0:
+                stderr = (proc.stderr or b"").decode("utf-8", errors="ignore")[:500]
+                raise HTTPException(status_code=500, detail=f"Full replace setup failed: {stderr}")
+
+            # Import dump
+            import_proc = run_mysql(base_args + [DB_NAME], stdin_path=tmp_path, timeout_s=60 * 30)
+            if import_proc.returncode != 0:
+                stderr = (import_proc.stderr or b"").decode("utf-8", errors="ignore")[:800]
+                errors.append(f"mysql import failed: {stderr}")
+
+            # Post-import verification using existing SqlClient (fast metadata queries)
+            tables_query = """
+                SELECT COUNT(*) as cnt
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+            """
+            table_cnt_rows, _, _ = self.client._execute_query(tables_query, params=(self.db_name,), fetch="all")
+            table_cnt = (table_cnt_rows or [{}])[0].get("cnt", 0) if table_cnt_rows else 0
+
+            views_query = """
+                SELECT COUNT(*) as cnt
+                FROM information_schema.VIEWS
+                WHERE TABLE_SCHEMA = %s
+            """
+            view_cnt_rows, _, _ = self.client._execute_query(views_query, params=(self.db_name,), fetch="all")
+            view_cnt = (view_cnt_rows or [{}])[0].get("cnt", 0) if view_cnt_rows else 0
+
+            elapsed = time.time() - started
+            success = len(errors) == 0
+            msg = f"Database import completed via {mode} in {elapsed:.1f}s from {filename}"
+
+            return {
+                "success": success,
+                "message": msg if success else (msg + " (with errors)"),
+                "tables_affected": int(table_cnt) if table_cnt is not None else None,
+                "warnings": warnings + ([f"VERIFICATION: Tables: {table_cnt}, Views: {view_cnt}"] if table_cnt is not None else []),
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    def _docker_http(
+        self,
+        sock_path: str,
+        method: str,
+        path: str,
+        body: Optional[dict] = None,
+        hijack: bool = False,
+        timeout_s: int = 30,
+    ):
+        """
+        Minimal Docker Engine API client over unix socket.
+        Returns (status_code, headers_dict, raw_body_bytes, socket_if_hijacked)
+        """
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # Prevent hanging forever if the Docker engine/socket is unresponsive.
+        # This timeout applies to connect and all subsequent reads/writes on this socket.
+        s.settimeout(timeout_s)
+        try:
+            s.connect(sock_path)
+        except socket.timeout as e:
+            raise TimeoutError("docker-http connect timeout") from e
+        body_bytes = b""
+        if body is not None:
+            body_bytes = json.dumps(body).encode("utf-8")
+        req = [
+            f"{method} {path} HTTP/1.1",
+            "Host: docker",
+            "User-Agent: evergreen-importer",
+            "Accept: application/json",
+            # Avoid gzip/chunking surprises when possible.
+            "Accept-Encoding: identity",
+        ]
+        if hijack:
+            req.append("Connection: Upgrade")
+            req.append("Upgrade: tcp")
+        else:
+            # Encourage the Docker engine to close the connection after the response so
+            # our simple client doesn't have to wait for keep-alive.
+            req.append("Connection: close")
+        if body is not None:
+            req.append("Content-Type: application/json")
+            req.append(f"Content-Length: {len(body_bytes)}")
+        else:
+            req.append("Content-Length: 0")
+        req.append("")
+        req.append("")
+        try:
+            s.sendall("\r\n".join(req).encode("utf-8") + body_bytes)
+        except socket.timeout as e:
+            raise TimeoutError("docker-http send timeout") from e
+
+        # Read HTTP response headers
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            try:
+                chunk = s.recv(4096)
+            except socket.timeout as e:
+                raise TimeoutError("docker-http header read timeout") from e
+            if not chunk:
+                break
+            buf += chunk
+        header_part, _, rest = buf.partition(b"\r\n\r\n")
+        header_lines = header_part.split(b"\r\n")
+        status_line = header_lines[0].decode("utf-8", errors="ignore")
+        try:
+            status_code = int(status_line.split(" ")[1])
+        except Exception:
+            status_code = 0
+        headers = {}
+        for line in header_lines[1:]:
+            if b":" in line:
+                k, v = line.split(b":", 1)
+                headers[k.decode("utf-8", errors="ignore").strip().lower()] = v.decode("utf-8", errors="ignore").strip()
+        if hijack:
+            return status_code, headers, rest, s
+        # Non-hijack: read content-length if present
+        content = rest
+        cl = headers.get("content-length")
+        te = headers.get("transfer-encoding", "").lower()
+
+        def _recv_more(n: int = 4096) -> bytes:
+            try:
+                return s.recv(n)
+            except socket.timeout as e:
+                raise TimeoutError("docker-http body read timeout") from e
+
+        if te == "chunked":
+            # Decode HTTP/1.1 chunked transfer encoding
+            decoded = b""
+            buf2 = content
+            while True:
+                # Read chunk size line
+                while b"\r\n" not in buf2:
+                    chunk = _recv_more(4096)
+                    if not chunk:
+                        break
+                    buf2 += chunk
+                if b"\r\n" not in buf2:
+                    break
+                line, _, buf2 = buf2.partition(b"\r\n")
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    size = int(line.split(b";", 1)[0], 16)
+                except Exception:
+                    # Malformed chunk size; fall back to what we have.
+                    break
+                if size == 0:
+                    # Read and discard trailer + final CRLF
+                    # Ensure we have the trailing CRLF at least.
+                    while b"\r\n\r\n" not in buf2 and b"\r\n" not in buf2:
+                        chunk = _recv_more(4096)
+                        if not chunk:
+                            break
+                        buf2 += chunk
+                    break
+                # Read chunk data + CRLF
+                while len(buf2) < size + 2:
+                    chunk = _recv_more(max(4096, size + 2 - len(buf2)))
+                    if not chunk:
+                        break
+                    buf2 += chunk
+                decoded += buf2[:size]
+                buf2 = buf2[size + 2 :]  # skip data and trailing CRLF
+            s.close()
+            return status_code, headers, decoded, None
+
+        if cl is not None:
+            target = int(cl)
+            while len(content) < target:
+                chunk = _recv_more(4096)
+                if not chunk:
+                    break
+                content += chunk
+        else:
+            # best-effort read until close
+            while True:
+                chunk = _recv_more(4096)
+                if not chunk:
+                    break
+                content += chunk
+        s.close()
+        return status_code, headers, content, None
+
+    def _docker_exec(
+        self,
+        sock_path: str,
+        container: str,
+        cmd: List[str],
+        stdin_bytes: Optional[bytes] = None,
+        timeout_s: int = 60 * 30,
+        user: Optional[str] = None,
+    ):
+        # Docker Engine API calls can occasionally stall (especially on Docker Desktop).
+        # Use a more forgiving timeout for the HTTP control plane, while keeping a separate
+        # (potentially larger) timeout for the exec stream itself.
+        http_timeout_s = max(30, min(120, int(timeout_s)))
+        # Create exec
+        create_body = {
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "AttachStdin": bool(stdin_bytes is not None),
+            "Tty": False,
+            "Cmd": cmd,
+        }
+        if user:
+            create_body["User"] = user
+        status, _, content, _ = self._docker_http(
+            sock_path,
+            "POST",
+            f"/containers/{container}/exec",
+            create_body,
+            timeout_s=http_timeout_s,
+        )
+        if status >= 300:
+            raise RuntimeError(f"Docker exec create failed ({status}): {content[:200]!r}")
+        exec_id = json.loads(content.decode("utf-8", errors="ignore")).get("Id")
+        if not exec_id:
+            raise RuntimeError("Docker exec create returned no Id")
+
+        # Start exec with hijack
+        start_body = {"Detach": False, "Tty": False}
+        # Retry start once on timeout to handle transient Docker engine stalls.
+        try:
+            status, _, rest, sock = self._docker_http(
+                sock_path,
+                "POST",
+                f"/exec/{exec_id}/start",
+                start_body,
+                hijack=True,
+                timeout_s=http_timeout_s,
+            )
+        except TimeoutError:
+            status, _, rest, sock = self._docker_http(
+                sock_path,
+                "POST",
+                f"/exec/{exec_id}/start",
+                start_body,
+                hijack=True,
+                timeout_s=http_timeout_s,
+            )
+        if status >= 300 or sock is None:
+            raise RuntimeError(f"Docker exec start failed ({status})")
+
+        sock.settimeout(timeout_s)
+        # If there is stdin, send it now, then close write side
+        if stdin_bytes is not None:
+            sock.sendall(stdin_bytes)
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except Exception:
+                pass
+
+        # Read multiplexed output (stdout/stderr)
+        out = b""
+        err = b""
+        try:
+            while True:
+                header = sock.recv(8)
+                if not header:
+                    break
+                if len(header) < 8:
+                    break
+                stream_type = header[0]
+                size = int.from_bytes(header[4:8], byteorder="big")
+                payload = b""
+                while len(payload) < size:
+                    chunk = sock.recv(size - len(payload))
+                    if not chunk:
+                        break
+                    payload += chunk
+                if stream_type == 1:
+                    out += payload
+                elif stream_type == 2:
+                    err += payload
+                else:
+                    out += payload
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+        # Inspect exec exit code so we don't treat failures as success.
+        status, _, content, _ = self._docker_http(
+            sock_path,
+            "GET",
+            f"/exec/{exec_id}/json",
+            body=None,
+            timeout_s=http_timeout_s,
+        )
+        exit_code = None
+        try:
+            if status < 300:
+                exit_code = int(json.loads(content.decode("utf-8", errors="ignore")).get("ExitCode"))
+        except Exception:
+            exit_code = None
+        return out, err, exit_code
+
+    def _import_via_docker_exec(
+        self,
+        sql_text: str,
+        filename: str,
+        mode: str,
+        warnings: List[str],
+        errors: List[str],
+        docker_sock_path: str,
+        mysql_container: str,
+    ) -> Dict:
+        from config import DB_NAME, DB_USER, DB_PASSWORD
+        started = time.time()
+
+        warnings.append(f"VERIFICATION: Docker-exec import enabled (container={mysql_container})")
+
+        # Sanitize & split dump:
+        # - block dangerous commands inside the dump (GRANT/REVOKE/CREATE DATABASE/DROP DATABASE)
+        # - strip DEFINER clauses
+        # - remove CREATE VIEW statements from the bulk import and apply them afterwards in dependency order
+        dangerous_prefixes = ("DROP DATABASE", "CREATE DATABASE", "GRANT ", "REVOKE ")
+        def strip_definer(s: str) -> str:
+            # Covers backticks, quotes, and bare user@host forms.
+            s2 = re.sub(r"DEFINER\s*=\s*`[^`]+`\s*@\s*`[^`]+`\s*", "", s, flags=re.IGNORECASE)
+            s2 = re.sub(r"DEFINER\s*=\s*['\"][^'\"]+['\"]\s*@\s*['\"][^'\"]+['\"]\s*", "", s2, flags=re.IGNORECASE)
+            s2 = re.sub(r"DEFINER\s*=\s*[^\s]+@[^\s]+\s*", "", s2, flags=re.IGNORECASE)
+            return s2
+
+        # Parse statements once so we can separate view creation safely.
+        all_statements = self._parse_statements(sql_text)
+        view_statements: List[Tuple[str, Optional[str]]] = []
+        base_statements: List[str] = []
+        for stmt in all_statements:
+            stmt2 = strip_definer(stmt)
+            stmt_up = stmt2.strip().upper()
+            if any(stmt_up.startswith(p) for p in dangerous_prefixes):
+                warnings.append(f"SQL file contains '{stmt_up.split(' ')[0]} {stmt_up.split(' ')[1]}' command which has been blocked for safety.")
+                continue
+            # Identify CREATE VIEW / CREATE OR REPLACE VIEW / CREATE ALGORITHM=... VIEW statements.
+            if stmt_up.startswith("CREATE") and "VIEW" in stmt_up[:250]:
+                vname = self._extract_view_name(stmt2)
+                if vname and "DEFINER" in stmt_up and "DEFINER" not in stmt2.upper():
+                    warnings.append(f"VERIFICATION: Stripped DEFINER from view '{vname}'")
+                view_statements.append((stmt2, vname))
+            else:
+                base_statements.append(stmt2)
+
+        # Remove any INSERT/REPLACE into known views just in case a dump exported them incorrectly.
+        known_views = {
+            "consolidated_revenue_and_payments",
+            "ledger_partnerpayouts",
+            "ledger_partnerpayouts_with_filter",
+            "revenue_ledger",
+        }
+        filtered_base: List[str] = []
+        for stmt in base_statements:
+            sup = stmt.strip().upper()
+            if sup.startswith("INSERT") or sup.startswith("REPLACE"):
+                m = re.search(r"(?:REPLACE|INSERT\s+(?:IGNORE\s+)?)\s+INTO\s+[`\"]?([a-zA-Z0-9_]+)[`\"]?", stmt, re.IGNORECASE)
+                if m and m.group(1).lower() in known_views:
+                    warnings.append(f"VERIFICATION: Skipping INSERT/REPLACE into view '{m.group(1)}'")
+                    continue
+            filtered_base.append(stmt)
+        base_statements = filtered_base
+
+        # Rebuild bulk SQL without CREATE VIEW statements so mysql import can't abort on view dependency ordering.
+        bulk_sql = "\n".join(base_statements) + "\n"
+
+        # Safe mode: pre-backup via mysqldump inside MySQL container
+        if mode == "full_replace_safe":
+            try:
+                dump_cmd = ["mysqldump", "-u", DB_USER, f"-p{DB_PASSWORD}", "--single-transaction", "--routines", "--triggers", "--events", DB_NAME]
+                out, err, code = self._docker_exec(docker_sock_path, mysql_container, dump_cmd, stdin_bytes=None, timeout_s=60 * 10)
+                if out:
+                    safe_ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                    backup_path = os.path.join(tempfile.gettempdir(), f"preimport-backup-{safe_ts}.sql")
+                    with open(backup_path, "wb") as f:
+                        f.write(out)
+                    warnings.append(f"VERIFICATION: Pre-import backup created at {backup_path}")
+                else:
+                    warnings.append(f"VERIFICATION: ⚠ Pre-import backup produced no output: {err[:200].decode('utf-8', errors='ignore')}")
+                if code not in (0, None):
+                    warnings.append(f"VERIFICATION: ⚠ Pre-import backup exit code: {code}")
+            except Exception as e:
+                warnings.append(f"VERIFICATION: ⚠ Pre-import backup failed (continuing): {type(e).__name__}: {str(e)[:200]}")
+
+        def run_mysql_e(sql: str, timeout_s: int):
+            return self._docker_exec(
+                docker_sock_path,
+                mysql_container,
+                ["mysql", "-u", DB_USER, f"-p{DB_PASSWORD}", "-e", sql],
+                stdin_bytes=None,
+                timeout_s=timeout_s,
+            )
+
+        def fix_datadir_perms(reason: str):
+            warnings.append(f"VERIFICATION: Attempting MySQL data-dir permission repair ({reason})")
+            # Best-effort: ensure the datadir and the schema directory (if present) are owned by mysql.
+            # This addresses cases where MySQL cannot stat or create schema dirs (errno 13).
+            _outp, errp, codep = self._docker_exec(
+                docker_sock_path,
+                mysql_container,
+                [
+                    "sh",
+                    "-lc",
+                    f"chown -R mysql:mysql /var/lib/mysql && chmod 750 /var/lib/mysql && "
+                    f"(test -d \"/var/lib/mysql/{DB_NAME}\" && chown -R mysql:mysql \"/var/lib/mysql/{DB_NAME}\" || true) && "
+                    f"(test -d \"/var/lib/mysql/{DB_NAME}\" && chmod 750 \"/var/lib/mysql/{DB_NAME}\" || true)",
+                ],
+                stdin_bytes=None,
+                timeout_s=180,
+                user="0",
+            )
+            if codep not in (0, None):
+                warnings.append(f"VERIFICATION: ⚠ data-dir permission repair returned exit={codep}: {errp[:200].decode('utf-8', errors='ignore')}")
+
+        # Full replace: drop and recreate database
+        drop_create_sql = (
+            f"SET FOREIGN_KEY_CHECKS=0; "
+            f"DROP DATABASE IF EXISTS `{DB_NAME}`; "
+            f"CREATE DATABASE `{DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; "
+            f"SET FOREIGN_KEY_CHECKS=1;"
+        )
+        # Pre-flight permissions fix to avoid DROP/CREATE failing due to mounted-volume ownership issues.
+        fix_datadir_perms("pre-drop/create")
+        out, err, code = run_mysql_e(drop_create_sql, timeout_s=300)
+        if code not in (0, None):
+            err_txt = err[:800].decode("utf-8", errors="ignore")
+            # MySQL can fail CREATE DATABASE with:
+            # ERROR 3678 (HY000): Schema directory './db_name' already exist
+            # This usually indicates a stale schema directory in /var/lib/mysql after a previous crash.
+            if "ERROR 3678" in err_txt or "Schema directory" in err_txt:
+                warnings.append(f"VERIFICATION: Detected stale schema directory for '{DB_NAME}', attempting cleanup and retry")
+                # Best-effort cleanup: remove schema dir, then retry CREATE DATABASE.
+                # Requires root inside the MySQL container.
+                _out2, err2, code2 = self._docker_exec(
+                    docker_sock_path,
+                    mysql_container,
+                    ["sh", "-lc", f"rm -rf \"/var/lib/mysql/{DB_NAME}\""],
+                    stdin_bytes=None,
+                    timeout_s=60,
+                    user="0",
+                )
+                if code2 not in (0, None):
+                    raise RuntimeError(
+                        f"docker-exec cleanup failed (exit={code2}): {err2[:300].decode('utf-8', errors='ignore')}"
+                    )
+                # Retry create (drop already attempted above)
+                create_only_sql = f"CREATE DATABASE `{DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+                _out3, err3, code3 = run_mysql_e(create_only_sql, timeout_s=120)
+                if code3 not in (0, None):
+                    err3_txt = err3[:800].decode("utf-8", errors="ignore")
+                    # ERROR 3680 + errno 13: MySQL cannot create schema directory due to permissions.
+                    # This happens when /var/lib/mysql is owned by root or wrong UID/GID on mounted volume.
+                    if "ERROR 3680" in err3_txt or "errno: 13" in err3_txt.lower() or "permission denied" in err3_txt.lower():
+                        warnings.append("VERIFICATION: Detected MySQL data-dir permission issue; attempting chown and retry")
+                        # Best-effort fix: ensure datadir is owned by mysql user inside the container.
+                        _out4, err4, code4 = self._docker_exec(
+                            docker_sock_path,
+                            mysql_container,
+                            ["sh", "-lc", "chown -R mysql:mysql /var/lib/mysql && chmod 750 /var/lib/mysql || true"],
+                            stdin_bytes=None,
+                            timeout_s=120,
+                            user="0",
+                        )
+                        # Retry create again
+                        _out5, err5, code5 = run_mysql_e(create_only_sql, timeout_s=120)
+                        if code5 not in (0, None):
+                            raise RuntimeError(
+                                f"docker-exec create after cleanup+chown failed (exit={code5}): {err5[:400].decode('utf-8', errors='ignore')}"
+                            )
+                    else:
+                        raise RuntimeError(
+                            f"docker-exec create after cleanup failed (exit={code3}): {err3_txt[:400]}"
+                        )
+            elif "CAN'T GET STAT" in err_txt.upper() or "ERRNO 13" in err_txt.upper() or "PERMISSION DENIED" in err_txt.upper():
+                # MySQL cannot stat the schema dir during DROP DATABASE due to permissions.
+                fix_datadir_perms("drop/create errno 13")
+                out_r, err_r, code_r = run_mysql_e(drop_create_sql, timeout_s=300)
+                if code_r not in (0, None):
+                    err_r_txt = err_r[:800].decode("utf-8", errors="ignore")
+                    raise RuntimeError(f"docker-exec drop/create failed after perm repair (exit={code_r}): {err_r_txt[:400]}")
+            else:
+                raise RuntimeError(f"docker-exec drop/create failed (exit={code}): {err_txt[:400]}")
+
+        # Verify database exists before importing
+        check_sql = f"SHOW DATABASES LIKE '{DB_NAME}';"
+        out, err, code = self._docker_exec(
+            docker_sock_path,
+            mysql_container,
+            ["mysql", "-u", DB_USER, f"-p{DB_PASSWORD}", "-e", check_sql],
+            stdin_bytes=None,
+            timeout_s=60,
+        )
+        if code not in (0, None):
+            raise RuntimeError(f"docker-exec DB existence check failed (exit={code}): {err[:200].decode('utf-8', errors='ignore')}")
+        if DB_NAME.encode("utf-8") not in out:
+            raise RuntimeError(f"docker-exec DB existence check failed: '{DB_NAME}' not present")
+
+        # Import: stream bulk (tables+data) SQL into mysql client inside mysql container
+        out, err, code = self._docker_exec(
+            docker_sock_path,
+            mysql_container,
+            ["mysql", "-u", DB_USER, f"-p{DB_PASSWORD}", DB_NAME],
+            stdin_bytes=bulk_sql.encode("utf-8"),
+            timeout_s=60 * 30,
+        )
+        if code not in (0, None):
+            raise RuntimeError(f"docker-exec mysql import failed (exit={code}): {err[:800].decode('utf-8', errors='ignore')}")
+        if err:
+            # mysql prints warnings to stderr; keep them as warnings unless clearly fatal
+            err_text = err.decode("utf-8", errors="ignore")
+            # Mark failure if it contains ERROR (best-effort)
+            if "ERROR" in err_text.upper():
+                errors.append(err_text[:800])
+            else:
+                warnings.append(f"VERIFICATION: mysql stderr: {err_text[:300]}")
+
+        # Create views after the bulk import, in dependency order, so view-to-view references succeed.
+        if view_statements:
+            priority_map = {
+                "ledger_partnerpayouts": 1,
+                "revenue_ledger": 1,
+                "ledger_partnerpayouts_with_filter": 2,
+                "consolidated_revenue_and_payments": 3,
+            }
+            def pr(item: Tuple[str, Optional[str]]) -> int:
+                v = (item[1] or "").lower()
+                return priority_map.get(v, 2)
+            for view_sql, vname in sorted(view_statements, key=pr):
+                # Ensure CREATE OR REPLACE VIEW to be idempotent
+                view_sql2 = re.sub(r"^CREATE\s+(?!OR\s+REPLACE)(?:ALGORITHM\s*=\s*\w+\s+)?VIEW\s+",
+                                   "CREATE OR REPLACE VIEW ",
+                                   view_sql,
+                                   flags=re.IGNORECASE)
+                # Execute as stdin so large view definitions work.
+                _o, _e, c = self._docker_exec(
+                    docker_sock_path,
+                    mysql_container,
+                    ["mysql", "-u", DB_USER, f"-p{DB_PASSWORD}", DB_NAME],
+                    stdin_bytes=(view_sql2 + "\n").encode("utf-8"),
+                    timeout_s=120,
+                )
+                if c not in (0, None):
+                    # Treat view failures as warnings, not fatal to the whole import.
+                    warnings.append(
+                        f"VERIFICATION: ⚠ CREATE VIEW '{vname or 'unknown'}' failed: {_e[:200].decode('utf-8', errors='ignore')}"
+                    )
+                else:
+                    warnings.append(f"VERIFICATION: ✓ CREATE VIEW '{vname or 'unknown'}' succeeded")
+
+        # Verify via existing SqlClient
+        tables_query = """
+            SELECT COUNT(*) as cnt
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+        """
+        table_cnt_rows, _, _ = self.client._execute_query(tables_query, params=(self.db_name,), fetch="all")
+        table_cnt = (table_cnt_rows or [{}])[0].get("cnt", 0) if table_cnt_rows else 0
+
+        views_query = """
+            SELECT COUNT(*) as cnt
+            FROM information_schema.VIEWS
+            WHERE TABLE_SCHEMA = %s
+        """
+        view_cnt_rows, _, _ = self.client._execute_query(views_query, params=(self.db_name,), fetch="all")
+        view_cnt = (view_cnt_rows or [{}])[0].get("cnt", 0) if view_cnt_rows else 0
+
+        # Ensure an admin user exists so login doesn't get bricked if the dump omitted it.
+        try:
+            self._ensure_fallback_admin(warnings)
+        except Exception as e:
+            warnings.append(f"FALLBACK WARNING: Could not verify/create admin user: {type(e).__name__}: {str(e)[:200]}")
+
+        elapsed = time.time() - started
+        success = len(errors) == 0
+        msg = f"Database import completed via docker-exec {mode} in {elapsed:.1f}s from {filename}"
+
+        return {
+            "success": success,
+            "message": msg if success else (msg + " (with errors)"),
+            "tables_affected": int(table_cnt) if table_cnt is not None else None,
+            "warnings": warnings + [f"VERIFICATION: Tables: {table_cnt}, Views: {view_cnt}"],
+            "executed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _ensure_fallback_admin(self, warnings: List[str]):
+        """
+        Ensure admin@evergreen.com exists after a full-replace import.
+        This is a safety net for dumps that omit users/admin rows.
+        """
+        try:
+            users_query = "SELECT email, role FROM `users`"
+            users_result, _, users_error = self.client._execute_query(users_query, fetch="all")
+            if users_error:
+                raise RuntimeError(str(users_error))
+            if not users_result:
+                warnings.append("FALLBACK: Users table is empty after import; creating fallback admin.")
+                self._create_fallback_admin(warnings)
+                return
+            admin_found = any((u.get("email") or "").lower() == "admin@evergreen.com" for u in users_result)
+            if not admin_found:
+                warnings.append("FALLBACK: admin@evergreen.com missing after import; creating fallback admin.")
+                self._create_fallback_admin(warnings)
+        except Exception:
+            # If users table doesn't exist yet (partial import), try to create fallback admin anyway.
+            self._create_fallback_admin(warnings)
     
     def _sanitize_sql(self, sql_content: str, warnings: List[str]) -> str:
         """Remove dangerous commands from SQL content."""
@@ -525,11 +1310,22 @@ class DatabaseImporter:
                         # Match DEFINER= followed by user@host (in various formats) followed by optional SQL SECURITY
                         # Pattern: DEFINER=`user`@`host` or DEFINER='user'@'host' or DEFINER=user@host, optionally followed by SQL SECURITY
                         # Use a more comprehensive pattern that handles all cases
-                        stmt = re.sub(r'DEFINER\s*=\s*(?:`[^`]+`@`[^`]+`|["\'][^"\']+["\']@["\'][^"\']+["\']|[^\s]+@[^\s]+)\s*(?:SQL\s+SECURITY\s+\w+\s+)?', '', stmt, flags=re.IGNORECASE)
+                        # More robust DEFINER stripping: handle backticks OR quotes around each part, and allow whitespace around '@'
+                        stmt = re.sub(
+                            r'DEFINER\s*=\s*(?:`[^`]+`\s*@\s*`[^`]+`|["\'][^"\']+["\']\s*@\s*["\'][^"\']+["\']|[^\s]+@[^\s]+)\s*(?:SQL\s+SECURITY\s+\w+\s+)?',
+                            '',
+                            stmt,
+                            flags=re.IGNORECASE
+                        )
                         # Also handle ALGORITHM=... DEFINER=... pattern - remove DEFINER but keep ALGORITHM
                         if 'ALGORITHM' in stmt_upper and 'DEFINER' in original_stmt.upper():
                             # Replace ALGORITHM=... DEFINER=... with just ALGORITHM=...
-                            stmt = re.sub(r'(ALGORITHM\s*=\s*\w+)\s+DEFINER\s*=\s*(?:`[^`]+`@`[^`]+`|["\'][^"\']+["\']@["\'][^"\']+["\']|[^\s]+@[^\s]+)\s*(?:SQL\s+SECURITY\s+\w+\s+)?', r'\1 ', stmt, flags=re.IGNORECASE)
+                            stmt = re.sub(
+                                r'(ALGORITHM\s*=\s*\w+)\s+DEFINER\s*=\s*(?:`[^`]+`\s*@\s*`[^`]+`|["\'][^"\']+["\']\s*@\s*["\'][^"\']+["\']|[^\s]+@[^\s]+)\s*(?:SQL\s+SECURITY\s+\w+\s+)?',
+                                r'\1 ',
+                                stmt,
+                                flags=re.IGNORECASE
+                            )
                         # Debug: log if DEFINER was found and stripped
                         if 'DEFINER' in original_stmt.upper() and 'DEFINER' not in stmt.upper():
                             warnings.append(f"VERIFICATION: Stripped DEFINER from view '{view_name}'")
