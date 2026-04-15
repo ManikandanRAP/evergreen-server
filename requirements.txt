@@ -8,3 +8,5 @@ bcrypt==4.0.1
 requests
 python-multipart
 pydantic[email]
+orjson
+redis

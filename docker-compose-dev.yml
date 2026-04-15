@@ -1,6 +1,14 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: evergreen-redis-dev
+    restart: unless-stopped
+    networks:
+      - evergreen_dev_net
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+
   backend-dev:
     build:
       context: .
@@ -11,15 +19,19 @@ services:
     env_file:
       - .env.dev
     environment:
-      - DB_HOST=${DB_HOST:-db-dev}
-      - DB_USER=${DB_USER:-evergreen_user}
-      - DB_PASSWORD=${DB_PASSWORD:-dev_password_change_me}
+      - DB_HOST=${DB_HOST:-evergreen-mysql-dev}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-rootpassword}
       - DB_NAME=${DB_NAME:-evergreen_dev}
       - DB_PORT=${DB_PORT:-3306}
       - SECRET_KEY=${SECRET_KEY:-dev_secret_key_change_me}
       - ENVIRONMENT=development
       - DEBUG=true
       - MYSQL_CONTAINER_NAME=${MYSQL_CONTAINER_NAME:-evergreen-mysql-dev}
+      - REDIS_URL=redis://redis:6379/0
+      - LEDGER_CACHE_TTL_SECONDS=86400
+    depends_on:
+      - redis
     networks:
       - evergreen_dev_net
     restart: unless-stopped

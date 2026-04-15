@@ -1,6 +1,7 @@
 import pymysql
 import json
 import os
+import time
 from auth import get_password_hash
 from contextlib import contextmanager
 from pydantic import BaseModel
@@ -231,8 +232,16 @@ def get_db_connection(retries=3, timeout=30):
         raise DatabaseConnectionError(f"Failed to connect after {retries} attempts: {str(last_error)}")
 
 class SqlClient:
+    _last_verification_ts = 0.0
+    _verify_interval_sec = 30.0
+
     def __init__(self):
-        self.verify_connection()
+        # Avoid running an extra round-trip "SELECT 1" on every request.
+        # Verify periodically so we keep the fail-fast behavior without adding latency.
+        now = time.monotonic()
+        if now - SqlClient._last_verification_ts > SqlClient._verify_interval_sec:
+            self.verify_connection()
+            SqlClient._last_verification_ts = now
 
     def verify_connection(self):
         success, error = test_database_connection()
@@ -285,6 +294,64 @@ class SqlClient:
             import traceback
             traceback.print_exc()
             return None, 0, e
+
+    def _index_exists(self, table_name: str, index_name: str):
+        sql = """
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND index_name = %s
+        LIMIT 1
+        """
+        result, _, error = self._execute_query(sql, (DB_NAME, table_name, index_name), fetch='one')
+        if error:
+            return False, error
+        return bool(result), None
+
+    def ensure_performance_indexes(self):
+        """
+        Create high-value indexes for auth/settings and ledger endpoints.
+        This is safe to run repeatedly; existing indexes are skipped.
+        """
+        index_specs = [
+            # Fast auth/settings lookups
+            ("users", "idx_users_email", "CREATE INDEX idx_users_email ON users (email)"),
+            ("users", "idx_users_id", "CREATE INDEX idx_users_id ON users (id)"),
+            # Revenue ledger filtering for partner/admin views
+            ("revenue_ledger", "idx_revenue_ledger_vendor_qbo_id", "CREATE INDEX idx_revenue_ledger_vendor_qbo_id ON revenue_ledger (vendor_qbo_id)"),
+            ("revenue_ledger", "idx_revenue_ledger_vendor_invoice_date", "CREATE INDEX idx_revenue_ledger_vendor_invoice_date ON revenue_ledger (vendor_qbo_id, invoice_date)"),
+            ("revenue_ledger", "idx_revenue_ledger_invoice_doc_payment_waiting", "CREATE INDEX idx_revenue_ledger_invoice_doc_payment_waiting ON revenue_ledger (invoice_doc_number, tot_payment_amounts, partner_comp_waiting)"),
+            ("ledger_partnerpayouts", "idx_lpp_vendor_docnumber", "CREATE INDEX idx_lpp_vendor_docnumber ON ledger_partnerpayouts (vendor_qbo_id, docnumber)"),
+            ("ledger_partnerpayouts", "idx_lpp_docnumber", "CREATE INDEX idx_lpp_docnumber ON ledger_partnerpayouts (docnumber)"),
+            # Vendor mapping lookup for /users/me enrichment
+            ("split_history", "idx_split_history_vendor_qbo_id", "CREATE INDEX idx_split_history_vendor_qbo_id ON split_history (vendor_qbo_id)"),
+            ("split_history", "idx_split_history_vendor_qbo_vendor_name", "CREATE INDEX idx_split_history_vendor_qbo_vendor_name ON split_history (vendor_qbo_id, vendor_name)"),
+        ]
+
+        for table_name, index_name, create_sql in index_specs:
+            exists, exists_error = self._index_exists(table_name, index_name)
+            if exists_error:
+                print(f"Skipping index check for {table_name}.{index_name}: {exists_error}")
+                continue
+            if exists:
+                continue
+
+            _, _, create_error = self._execute_query(create_sql, is_transaction=True)
+            if create_error:
+                # Duplicate key name can happen in concurrent startups; treat as success.
+                error_code = create_error.args[0] if getattr(create_error, "args", None) else None
+                if error_code == 1061:
+                    continue
+                # Missing table: skip gracefully so startup doesn't fail in partial schemas.
+                if error_code == 1146:
+                    print(f"Skipping index {index_name}: table '{table_name}' not found")
+                    continue
+                # Can't create index on a view; skip safely.
+                if error_code == 1347:
+                    print(f"Skipping index {index_name}: '{table_name}' is a view")
+                    continue
+                print(f"Failed creating index {index_name} on {table_name}: {create_error}")
 
     def get_all_podcasts(self):
         sql = "SELECT * FROM shows WHERE is_archived = FALSE OR is_archived IS NULL"
@@ -656,6 +723,21 @@ class SqlClient:
             return []
         return vendors
 
+    def get_vendor_name_by_qbo_id(self, vendor_qbo_id: int):
+        sql = """
+        SELECT vendor_name
+        FROM split_history
+        WHERE vendor_qbo_id = %s
+          AND vendor_name IS NOT NULL
+        LIMIT 1
+        """
+        vendor, _, error = self._execute_query(sql, (vendor_qbo_id,), fetch='one')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
+                raise error
+            return None
+        return vendor.get("vendor_name") if vendor else None
+
     def get_all_users(self):
         sql = "SELECT * FROM users"
         users, _, error = self._execute_query(sql, fetch='all')
@@ -943,112 +1025,56 @@ class SqlClient:
         return ledger, error
 
     def get_partner_payouts(self, partner_id: str = None):
-        try:
-            partner_payouts_view = "ledger_partnerpayouts_with_filter"
-            # First verify the view exists
-            print(f"DEBUG: Checking if view '{partner_payouts_view}' exists...")
-            view_check_sql = """
-            SELECT COUNT(*) as view_exists 
-            FROM information_schema.views 
-            WHERE table_schema = DATABASE() 
-            AND table_name = %s
+        if partner_id:
+            sql = """
+            SELECT
+                lpp.docnumber as bill_number,
+                lpp.txndate as bill_date,
+                lpp.bill_description,
+                lpp.bill_amount,
+                lpp.txnids_Payment as payment_id,
+                lpp.date_of_payment,
+                lpp.effective_billed_amount_paid,
+                lpp.billed_amount_outstanding,
+                lpp.show_qbo_name as show_name,
+                lpp.vendor_qbo_name
+            FROM ledger_partnerpayouts lpp
+            LEFT JOIN revenue_ledger rl
+                ON rl.invoice_doc_number = lpp.docnumber
+               AND rl.tot_payment_amounts = 0
+               AND rl.partner_comp_waiting > 0
+            WHERE lpp.vendor_qbo_id = %s
+              AND rl.invoice_doc_number IS NULL
             """
-            view_check, _, view_error = self._execute_query(view_check_sql, (partner_payouts_view,), fetch='one')
-            
-            if view_error:
-                print(f"ERROR: View check query failed: {view_error}")
-                return None, f"Failed to check if view exists: {str(view_error)}"
-            
-            if not view_check or view_check.get('view_exists', 0) == 0:
-                print(f"ERROR: View '{partner_payouts_view}' does not exist")
-                # Try to list all views to help debug
-                all_views_sql = "SELECT table_name FROM information_schema.views WHERE table_schema = DATABASE()"
-                all_views, _, _ = self._execute_query(all_views_sql, fetch='all')
-                view_names = [v.get('table_name', '') for v in (all_views or [])]
-                print(f"DEBUG: Available views: {view_names}")
-                return None, f"View '{partner_payouts_view}' does not exist. Available views: {', '.join(view_names) if view_names else 'none'}"
-            
-            print(f"DEBUG: View exists, proceeding with query...")
-            
-            if partner_id:
-                sql = """
-                SELECT 
-                    docnumber as bill_number,
-                    txndate as bill_date,
-                    bill_description,
-                    bill_amount,
-                    txnids_Payment as payment_id,
-                    date_of_payment,
-                    effective_billed_amount_paid,
-                    billed_amount_outstanding,
-                    show_qbo_name as show_name,
-                    vendor_qbo_name
-                FROM ledger_partnerpayouts_with_filter
-                WHERE vendor_qbo_id = %s
-                  AND COALESCE(exclude_bills, 0) = 0
-                """
-                params = (partner_id,)
-                print(f"DEBUG: Querying with partner_id: {partner_id}")
-            else:
-                sql = """
-                SELECT 
-                    docnumber as bill_number,
-                    txndate as bill_date,
-                    bill_description,
-                    bill_amount,
-                    txnids_Payment as payment_id,
-                    date_of_payment,
-                    effective_billed_amount_paid,
-                    billed_amount_outstanding,
-                    show_qbo_name as show_name,
-                    vendor_qbo_name
-                FROM ledger_partnerpayouts_with_filter
-                WHERE COALESCE(exclude_bills, 0) = 0
-                """
-                params = None
-                print(f"DEBUG: Querying all partner payouts")
+            params = (partner_id,)
+        else:
+            sql = """
+            SELECT
+                lpp.docnumber as bill_number,
+                lpp.txndate as bill_date,
+                lpp.bill_description,
+                lpp.bill_amount,
+                lpp.txnids_Payment as payment_id,
+                lpp.date_of_payment,
+                lpp.effective_billed_amount_paid,
+                lpp.billed_amount_outstanding,
+                lpp.show_qbo_name as show_name,
+                lpp.vendor_qbo_name
+            FROM ledger_partnerpayouts lpp
+            LEFT JOIN revenue_ledger rl
+                ON rl.invoice_doc_number = lpp.docnumber
+               AND rl.tot_payment_amounts = 0
+               AND rl.partner_comp_waiting > 0
+            WHERE rl.invoice_doc_number IS NULL
+            """
+            params = None
 
-            ledger, _, error = self._execute_query(sql, params, fetch='all')
-            
-            print(f"DEBUG: Query executed. Error: {error}, Result type: {type(ledger)}, Result length: {len(ledger) if ledger else 0}")
-
-            if error and isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
-                print(f"ERROR: Database connection error: {error}")
+        ledger, _, error = self._execute_query(sql, params, fetch='all')
+        if error:
+            if isinstance(error, (DatabaseConnectionError, DatabaseCredentialsError)):
                 raise error
-            
-            if error:
-                print(f"ERROR: Query error: {error}")
-                error_msg = str(error)
-                # Check for common SQL errors
-                if "doesn't exist" in error_msg.lower() or "unknown table" in error_msg.lower() or "table" in error_msg.lower() and "not found" in error_msg.lower():
-                    return None, f"View '{partner_payouts_view}' does not exist or is not accessible. SQL Error: {error_msg}"
-                return None, f"SQL Error querying partner payouts: {error_msg}"
-            
-            # Ensure we return a list, not a generator
-            if ledger is None:
-                print("WARNING: Query returned None")
-                return [], None
-            
-            if not isinstance(ledger, list):
-                print(f"DEBUG: Converting result to list (type: {type(ledger)})")
-                try:
-                    ledger = list(ledger) if ledger else []
-                except Exception as e:
-                    print(f"ERROR: Failed to convert to list: {e}")
-                    return None, f"Failed to process query results: {str(e)}"
-            
-            print(f"DEBUG: Returning {len(ledger)} records")
-            return ledger, None
-            
-        except (DatabaseConnectionError, DatabaseCredentialsError) as e:
-            print(f"ERROR: Database error in get_partner_payouts: {e}")
-            raise
-        except Exception as e:
-            error_msg = str(e)
-            print(f"ERROR: Unexpected error in get_partner_payouts: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return None, f"Unexpected error querying partner payouts: {error_msg}"
+            return None, f"SQL Error querying partner payouts: {str(error)}"
+        return ledger or [], None
 
 
     # ===== NEW (additions for feedback feature) =====

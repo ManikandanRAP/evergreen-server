@@ -1,15 +1,31 @@
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, ORJSONResponse, JSONResponse
 from jose import JWTError, jwt
 from typing import Optional, List, Any, Dict
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 import uuid
 import io
 import re
+import os
+import time
+import json
 
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.encoders import jsonable_encoder
+
+try:
+    import orjson
+except Exception:
+    orjson = None
+
+try:
+    import redis as redis_lib
+except Exception:
+    redis_lib = None
 
 from models import (
     Show,
@@ -78,6 +94,8 @@ class DeveloperLogsResponse(BaseModel):
     next_after: int
 from config import SECRET_KEY, ALGORITHM
 
+FastJSONResponse = ORJSONResponse if orjson is not None else JSONResponse
+
 app = FastAPI(
     title="Evergreen Podcasts API",
     description="API for managing podcasts and partners with JWT authentication.",
@@ -85,7 +103,106 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    default_response_class=FastJSONResponse,
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+LEDGER_CACHE_TTL_SECONDS = int(os.environ.get("LEDGER_CACHE_TTL_SECONDS", "60"))
+_ledger_cache_memory: Dict[str, tuple[float, Any]] = {}
+_redis_client = None
+if redis_lib and os.environ.get("REDIS_URL"):
+    try:
+        _redis_client = redis_lib.Redis.from_url(os.environ["REDIS_URL"], decode_responses=False)
+        _redis_client.ping()
+        print("Ledger cache backend: redis")
+    except Exception as e:
+        print(f"WARNING: Redis unavailable, falling back to in-memory cache: {e}")
+        _redis_client = None
+else:
+    print("Ledger cache backend: in-memory")
+
+
+def _cache_decode_payload(payload: bytes):
+    if payload is None:
+        return None
+    if orjson:
+        return orjson.loads(payload)
+    return json.loads(payload.decode("utf-8"))
+
+
+def _normalize_json_content(value: Any):
+    # Normalize DB-native values (e.g., Decimal) for strict JSON serializers.
+    return jsonable_encoder(value, custom_encoder={Decimal: float})
+
+
+def _cache_encode_payload(value: Any) -> bytes:
+    value = _normalize_json_content(value)
+    if orjson:
+        return orjson.dumps(value)
+    return json.dumps(value).encode("utf-8")
+
+
+def _cache_get(key: str):
+    if _redis_client is not None:
+        try:
+            payload = _redis_client.get(key)
+            return _cache_decode_payload(payload) if payload else None
+        except Exception as e:
+            print(f"WARNING: Redis cache get failed for {key}: {e}")
+
+    cached = _ledger_cache_memory.get(key)
+    if not cached:
+        return None
+    expires_at, value = cached
+    if time.time() >= expires_at:
+        _ledger_cache_memory.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value: Any, ttl: int = LEDGER_CACHE_TTL_SECONDS):
+    safe_value = _normalize_json_content(value)
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, ttl, _cache_encode_payload(safe_value))
+        except Exception as e:
+            print(f"WARNING: Redis cache set failed for {key}: {e}")
+    _ledger_cache_memory[key] = (time.time() + ttl, safe_value)
+
+
+def invalidate_ledger_cache():
+    _ledger_cache_memory.clear()
+    if _redis_client is not None:
+        try:
+            for key in _redis_client.scan_iter(match="ledger:*"):
+                _redis_client.delete(key)
+            for key in _redis_client.scan_iter(match="partner_payouts:*"):
+                _redis_client.delete(key)
+        except Exception as e:
+            print(f"WARNING: Redis cache invalidation failed: {e}")
+
+
+def _ledger_cache_key(current_user: Dict[str, Any], endpoint: str) -> str:
+    role = current_user.get("role") or "unknown"
+    if role == "partner":
+        vendor = current_user.get("mapped_vendor_qbo_id") or "none"
+        return f"{endpoint}:partner:{vendor}"
+    return f"{endpoint}:{role}:all"
+
+
+@app.on_event("startup")
+def ensure_startup_indexes():
+    """
+    Ensure critical query indexes exist.
+    This keeps deployments self-healing after DB restores/migrations.
+    """
+    try:
+        SqlClient().ensure_performance_indexes()
+    except Exception as e:
+        # Startup should continue; API can still serve while DB/admin fixes are applied.
+        print(f"WARNING: Failed to ensure performance indexes on startup: {e}")
+    invalidate_ledger_cache()
 
 app.add_middleware(
     CORSMiddleware,
@@ -100,7 +217,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 # ----------------------
 # Auth helpers
 # ----------------------
-async def get_token_email(token: str = Depends(oauth2_scheme)) -> str:
+def get_token_email(token: str = Depends(oauth2_scheme)) -> str:
     """
     Decode JWT and return email without touching the database.
     This is required for endpoints that must work while the DB is being replaced.
@@ -118,7 +235,7 @@ async def get_token_email(token: str = Depends(oauth2_scheme)) -> str:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -139,15 +256,15 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return user
 
-async def get_current_active_user(current_user: User = Depends(get_current_user)):
+def get_current_active_user(current_user: User = Depends(get_current_user)):
     return current_user
 
-async def get_admin_user(current_user: User = Depends(get_current_active_user)):
+def get_admin_user(current_user: User = Depends(get_current_active_user)):
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
-async def get_admin_or_internal_user(current_user: User = Depends(get_current_active_user)):
+def get_admin_or_internal_user(current_user: User = Depends(get_current_active_user)):
     if current_user.get("role") not in ("admin", "internal_full_access", "internal_show_access"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
@@ -156,7 +273,7 @@ async def get_admin_or_internal_user(current_user: User = Depends(get_current_ac
 # Auth endpoints
 # ----------------------
 @app.post("/login")
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
     user, _ = client.get_user_by_email(email=form_data.username)
     if not user or not verify_password(form_data.password, user.get("password_hash")):
@@ -169,24 +286,16 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/users/me", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
+def read_users_me(current_user: User = Depends(get_current_active_user)):
     # Populate mapped_vendor_name if mapped_vendor_qbo_id exists
     if current_user.get("mapped_vendor_qbo_id"):
         client = SqlClient()
-        vendors = client.get_all_vendors()
-        vendor_map = {}
-        for v in vendors or []:
-            vid = v.get("vendor_qbo_id")
-            vname = v.get("vendor_name") or v.get("vendor_qbo_name") or v.get("displayname")
-            if vid is not None and vname:
-                try:
-                    vendor_map[int(vid)] = vname
-                except Exception:
-                    pass
-        
         vid = current_user.get("mapped_vendor_qbo_id")
         if vid is not None:
-            current_user["mapped_vendor_name"] = vendor_map.get(int(vid))
+            try:
+                current_user["mapped_vendor_name"] = client.get_vendor_name_by_qbo_id(int(vid))
+            except Exception:
+                current_user["mapped_vendor_name"] = None
     
     return current_user
 
@@ -208,7 +317,7 @@ async def check_username_availability(request: UsernameCheckRequest, current_use
 # User Settings
 # ----------------------
 @app.get("/users/me/settings")
-async def get_user_settings(current_user: User = Depends(get_current_active_user)):
+def get_user_settings(current_user: User = Depends(get_current_active_user)):
     """Get the current user's settings"""
     client = SqlClient()
     settings, error = client.get_user_settings(current_user.get("id"))
@@ -218,7 +327,7 @@ async def get_user_settings(current_user: User = Depends(get_current_active_user
     return settings or {}
 
 @app.put("/users/me/settings")
-async def update_user_settings(
+def update_user_settings(
     settings_update: UserSettingsUpdate,
     current_user: User = Depends(get_current_active_user)
 ):
@@ -440,6 +549,7 @@ def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user))
     new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    invalidate_ledger_cache()
     return new_show
 
 @app.post("/podcasts/bulk-import", status_code=status.HTTP_200_OK)
@@ -463,6 +573,9 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
     message = "Bulk import process completed."
     if failed_imports > 0 and successful_imports == 0:
         message = "All show imports failed. Please check the errors below."
+
+    if successful_imports > 0:
+        invalidate_ledger_cache()
 
     return {
         "message": message,
@@ -633,6 +746,9 @@ def bulk_create_podcasts_with_actions(
 
     message = f"Bulk import completed. Created: {successful_imports}, Updated: {updated_imports}, Skipped: {skipped_imports}, Failed: {failed_imports}"
 
+    if successful_imports > 0 or updated_imports > 0:
+        invalidate_ledger_cache()
+
     return {
         "message": message,
         "total": len(shows_data),
@@ -722,6 +838,7 @@ def update_podcast(show_id: str, show_data: ShowUpdate, admin: User = Depends(ge
         if "No update data provided" in str(error):
             raise HTTPException(status_code=400, detail=str(error))
         raise HTTPException(status_code=404, detail=str(error))
+    invalidate_ledger_cache()
     return updated_show
 
 class BulkDeleteRequest(BaseModel):
@@ -735,6 +852,7 @@ def bulk_delete_podcasts(request: BulkDeleteRequest, admin: User = Depends(get_a
     
     client = SqlClient()
     results = client.bulk_delete_podcasts(request.show_ids)
+    invalidate_ledger_cache()
     
     return {
         "message": f"Successfully deleted {results['successful']} shows",
@@ -750,6 +868,7 @@ def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     success, error = client.delete_podcast(show_id)
     if not success:
         raise HTTPException(status_code=404, detail=error)
+    invalidate_ledger_cache()
 
 # Archive endpoints
 @app.patch("/podcasts/{show_id}/archive", response_model=Show)
@@ -763,6 +882,7 @@ def archive_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     archived_show, error = client.archive_podcast(show_id, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    invalidate_ledger_cache()
     return archived_show
 
 @app.patch("/podcasts/{show_id}/unarchive", response_model=Show)
@@ -776,6 +896,7 @@ def unarchive_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     unarchived_show, error = client.unarchive_podcast(show_id, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    invalidate_ledger_cache()
     return unarchived_show
 
 class BulkArchiveRequest(BaseModel):
@@ -795,6 +916,7 @@ def bulk_archive_podcasts(request: BulkArchiveRequest, admin: User = Depends(get
     result, error = client.bulk_archive_podcasts(request.show_ids, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    invalidate_ledger_cache()
     return result
 
 @app.patch("/podcasts/bulk-unarchive", response_model=dict)
@@ -811,6 +933,7 @@ def bulk_unarchive_podcasts(request: BulkArchiveRequest, admin: User = Depends(g
     result, error = client.bulk_unarchive_podcasts(request.show_ids, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    invalidate_ledger_cache()
     return result
 
 @app.get("/vendors")
@@ -877,6 +1000,7 @@ def create_new_split(split_data: SplitCreate, admin: User = Depends(get_admin_us
     new_split, error = client.create_split(split_data)
     if error:
         raise HTTPException(status_code=500, detail=error)
+    invalidate_ledger_cache()
     return new_split
 
 # NEW: delete a split (admin only)
@@ -888,6 +1012,7 @@ def delete_split(split_id: int, admin: User = Depends(get_admin_user)):
         if err and "not found" in err.lower():
             raise HTTPException(status_code=404, detail=err)
         raise HTTPException(status_code=500, detail=err or "Failed to delete split")
+    invalidate_ledger_cache()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # NEW: get all split history (admin only)
@@ -908,6 +1033,7 @@ def update_split(split_id: int, split_data: SplitCreate, admin: User = Depends(g
         if "not found" in error.lower():
             raise HTTPException(status_code=404, detail=error)
         raise HTTPException(status_code=500, detail=error)
+    invalidate_ledger_cache()
     return updated_split
 
 # ----------------------
@@ -933,7 +1059,15 @@ def catalog_all_vendors(admin: User = Depends(get_admin_user)):
 # Ledger
 # ----------------------
 @app.get("/ledger")
-async def get_ledger(current_user: dict = Depends(get_current_active_user)):
+def get_ledger(current_user: dict = Depends(get_current_active_user)):
+    cache_key = _ledger_cache_key(current_user, "ledger")
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        response = FastJSONResponse(content=_normalize_json_content(cached))
+        response.headers["X-Cache"] = "HIT"
+        response.headers["X-Cache-Key"] = cache_key
+        return response
+
     client = SqlClient()
     if current_user.get("role") in ("admin", "internal", "internal_full_access"):
         ledger, error = client.get_ledger()
@@ -941,10 +1075,23 @@ async def get_ledger(current_user: dict = Depends(get_current_active_user)):
         ledger, error = client.get_ledger(current_user.get("mapped_vendor_qbo_id"))
     if error:
         raise HTTPException(status_code=500, detail=str(error))
-    return ledger
+    payload = ledger or []
+    _cache_set(cache_key, payload)
+    response = FastJSONResponse(content=_normalize_json_content(payload))
+    response.headers["X-Cache"] = "MISS"
+    response.headers["X-Cache-Key"] = cache_key
+    return response
 
 @app.get("/partner_payouts")
-async def get_partners_payouts(current_user: dict = Depends(get_current_active_user)):
+def get_partners_payouts(current_user: dict = Depends(get_current_active_user)):
+    cache_key = _ledger_cache_key(current_user, "partner_payouts")
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        response = FastJSONResponse(content=_normalize_json_content(cached))
+        response.headers["X-Cache"] = "HIT"
+        response.headers["X-Cache-Key"] = cache_key
+        return response
+
     try:
         client = SqlClient()
         if current_user.get("role") in ("admin", "internal", "internal_full_access"):
@@ -962,9 +1109,18 @@ async def get_partners_payouts(current_user: dict = Depends(get_current_active_u
         
         if partners_payouts is None:
             print("WARNING: get_partner_payouts returned None")
-            return []
+            _cache_set(cache_key, [])
+            response = FastJSONResponse(content=[])
+            response.headers["X-Cache"] = "MISS"
+            response.headers["X-Cache-Key"] = cache_key
+            return response
         
-        return partners_payouts
+        payload = partners_payouts or []
+        _cache_set(cache_key, payload)
+        response = FastJSONResponse(content=_normalize_json_content(payload))
+        response.headers["X-Cache"] = "MISS"
+        response.headers["X-Cache-Key"] = cache_key
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -1048,6 +1204,7 @@ async def _run_import_job(job_id: str, *, dump_bytes: bytes, filename: str, mode
         job["result"] = result
         if result.get("success"):
             _devlog(admin.get("email"), "success", f"Database import finished ({mode})", result.get("message"))
+            invalidate_ledger_cache()
         else:
             _devlog(admin.get("email"), "error", f"Database import finished with errors ({mode})", result.get("message"))
     except Exception as e:
@@ -1101,6 +1258,7 @@ async def import_database(
         )
     
     try:
+        invalidate_ledger_cache()
         _devlog(admin.get("email"), "command", f"Database import started: {file.filename}")
         client = SqlClient()
         importer = DatabaseImporter(client)
