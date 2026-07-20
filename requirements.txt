@@ -10,3 +10,8 @@ python-multipart
 pydantic[email]
 orjson
 redis
+google-api-python-client
+google-auth
+google-auth-httplib2
+python-dotenv
+twilio

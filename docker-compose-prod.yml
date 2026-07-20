@@ -18,17 +18,22 @@ services:
       - MYSQL_USER=root
       - MYSQL_PASSWORD=rootpassword
     ports:
-      - "3306:3306"  # External access on port 3307
+      - "3306:3306"
     volumes:
-      # The MySQL data will be stored in a 'db_data' directory outside the project folder.
       - /home/db_data:/var/lib/mysql
     networks:
       - evergreen_net
     restart: unless-stopped
     entrypoint: ["/bin/bash", "-lc", "mkdir -p /var/lib/mysql /var/run/mysqld && chown -R mysql:mysql /var/lib/mysql /var/run/mysqld && exec docker-entrypoint.sh mysqld --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password"]
+
   backend:
     build: .
     container_name: evergreen-server-backend
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "8000:8000"
     environment:
@@ -40,7 +45,12 @@ services:
       - SECRET_KEY=a56355d68f0a1b04226cfae1768177aec80bf730faec8092b87af36d79791524
       - MYSQL_CONTAINER_NAME=evergreen-mysql
       - REDIS_URL=redis://redis:6379/0
-      - LEDGER_CACHE_TTL_SECONDS=86400
+      - LEDGER_CACHE_TTL_SECONDS=3600
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco.evergreenpodcasts.com}
     depends_on:
       - db
       - redis
@@ -49,12 +59,38 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # Add these for debugging
+      - ./secrets:/secrets:ro
     stdin_open: true
     tty: true
+
+  notice-scheduler:
+    build: .
+    container_name: evergreen-notice-scheduler
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=rootpassword
+      - DB_NAME=evergreen
+      - DB_PORT=3306
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco.evergreenpodcasts.com}
+    depends_on:
+      - db
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    volumes:
+      - ./secrets:/secrets:ro
+    command: ["sh", "-c", "while true; do if python -u scripts/notice_reminder_cron.py; then sleep 3600; else sleep 60; fi; done"]
 
 networks:
   evergreen_net:
     driver: bridge
-
-

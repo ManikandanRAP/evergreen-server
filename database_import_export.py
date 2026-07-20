@@ -90,6 +90,10 @@ class DatabaseExporter:
             raise HTTPException(status_code=500, detail=f"Failed to get tables: {error}")
         
         table_names = [t.get('TABLE_NAME') for t in (tables_result or []) if t.get('TABLE_NAME')]
+        if "user_login_activity" not in {t.lower() for t in table_names}:
+            sql_parts.append("-- WARNING: `user_login_activity` table not found at export time.")
+            sql_parts.append("-- Run `migrate_add_user_login_activity.sql` to include login/logout audit history in backups.")
+            sql_parts.append("")
         
         for table_name in table_names:
             # Get CREATE TABLE statement
@@ -236,6 +240,7 @@ class DatabaseImporter:
         
         # Verify critical tables
         self._verify_critical_tables(results, warnings)
+        self._verify_login_activity_table(warnings)
         
         # Generate report (pass views set for exclusion)
         report = self._generate_report(results, warnings, errors, views)
@@ -435,6 +440,7 @@ class DatabaseImporter:
             elapsed = time.time() - started
             success = len(errors) == 0
             msg = f"Database import completed via {mode} in {elapsed:.1f}s from {filename}"
+            self._verify_login_activity_table(warnings)
 
             return {
                 "success": success,
@@ -986,6 +992,7 @@ class DatabaseImporter:
         elapsed = time.time() - started
         success = len(errors) == 0
         msg = f"Database import completed via docker-exec {mode} in {elapsed:.1f}s from {filename}"
+        self._verify_login_activity_table(warnings)
 
         return {
             "success": success,
@@ -1016,6 +1023,46 @@ class DatabaseImporter:
         except Exception:
             # If users table doesn't exist yet (partial import), try to create fallback admin anyway.
             self._create_fallback_admin(warnings)
+
+    def _verify_login_activity_table(self, warnings: List[str]):
+        """
+        Verify `user_login_activity` exists after import and report row count.
+        This keeps import feedback aligned with the permanent login/logout audit stream feature.
+        """
+        table_name = "user_login_activity"
+        try:
+            exists_query = """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME = %s
+            """
+            exists_result, _, exists_error = self.client._execute_query(
+                exists_query,
+                params=(self.db_name, table_name),
+                fetch="one",
+            )
+            if exists_error:
+                warnings.append(f"VERIFICATION: ⚠ Could not verify `{table_name}` existence: {str(exists_error)[:120]}")
+                return
+
+            exists_count = (exists_result or {}).get("cnt", 0)
+            if not exists_count:
+                warnings.append(
+                    f"VERIFICATION: ⚠ `{table_name}` table is missing after import. "
+                    "Run the login activity migration to restore this feature."
+                )
+                return
+
+            count_query = f"SELECT COUNT(*) AS count FROM `{table_name}`"
+            count_result, _, count_error = self.client._execute_query(count_query, fetch="one")
+            if count_error:
+                warnings.append(f"VERIFICATION: ✓ `{table_name}` exists (row count check failed: {str(count_error)[:120]})")
+                return
+
+            row_count = (count_result or {}).get("count", 0)
+            warnings.append(f"VERIFICATION: ✓ `{table_name}` verified with {row_count} row(s)")
+        except Exception as e:
+            warnings.append(f"VERIFICATION: ⚠ Error while verifying `{table_name}`: {str(e)[:120]}")
     
     def _sanitize_sql(self, sql_content: str, warnings: List[str]) -> str:
         """Remove dangerous commands from SQL content."""

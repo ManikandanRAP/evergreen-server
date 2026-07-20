@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS user_login_activity (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    event_uuid CHAR(36) NOT NULL,
+    occurred_at_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    user_id VARCHAR(64) NULL,
+    user_email VARCHAR(255) NOT NULL,
+    user_name VARCHAR(255) NULL,
+    user_role VARCHAR(64) NULL,
+    action ENUM('LOGIN','LOGOUT') NOT NULL,
+    status ENUM('SUCCESS','FAILED') NOT NULL DEFAULT 'SUCCESS',
+    request_id VARCHAR(128) NULL,
+    session_id VARCHAR(128) NULL,
+    ip_hash CHAR(64) NULL,
+    user_agent VARCHAR(512) NULL,
+    failure_reason VARCHAR(255) NULL,
+    metadata_json JSON NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_user_login_activity_event_uuid (event_uuid),
+    KEY idx_user_login_activity_time (occurred_at_utc),
+    KEY idx_user_login_activity_email_time (user_email, occurred_at_utc),
+    KEY idx_user_login_activity_action_time (action, occurred_at_utc),
+    KEY idx_user_login_activity_status_time (status, occurred_at_utc)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

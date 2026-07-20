@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+secrets/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+venv/
+*.log
+Dump*.sql
+local_*.sql
+db_data/

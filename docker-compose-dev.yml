@@ -14,10 +14,13 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: evergreen-server-backend-dev
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "8001:8000"  # Dev uses port 8001
     env_file:
-      - .env.dev
+      - .env
     environment:
       - DB_HOST=${DB_HOST:-evergreen-mysql-dev}
       - DB_USER=${DB_USER:-root}
@@ -29,7 +32,12 @@ services:
       - DEBUG=true
       - MYSQL_CONTAINER_NAME=${MYSQL_CONTAINER_NAME:-evergreen-mysql-dev}
       - REDIS_URL=redis://redis:6379/0
-      - LEDGER_CACHE_TTL_SECONDS=86400
+      - LEDGER_CACHE_TTL_SECONDS=3600
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco-dev.evergreenpodcasts.com}
     depends_on:
       - redis
     networks:
@@ -38,6 +46,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./secrets:/secrets:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs').read()"]
       interval: 30s
@@ -45,8 +54,32 @@ services:
       retries: 3
       start_period: 40s
 
+  notice-scheduler:
+    build: .
+    container_name: evergreen-notice-scheduler-dev
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      - DB_HOST=${DB_HOST:-evergreen-mysql-dev}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-rootpassword}
+      - DB_NAME=${DB_NAME:-evergreen_dev}
+      - DB_PORT=3306
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco-dev.evergreenpodcasts.com}
+    networks:
+      - evergreen_dev_net
+    restart: unless-stopped
+    volumes:
+      - ./secrets:/secrets:ro
+    command: ["sh", "-c", "while true; do if python -u scripts/notice_reminder_cron.py; then sleep 3600; else sleep 60; fi; done"]
+
 networks:
   evergreen_dev_net:
     external: true
-
-

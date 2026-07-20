@@ -26,6 +26,11 @@ services:
   backend:
     build: .
     container_name: evergreen-server-backend
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "8001:8000"
     environment:
@@ -37,7 +42,12 @@ services:
       - SECRET_KEY= a56355d68f0a1b04226cfae1768177aec80bf730faec8092b87af36d79791524
       - MYSQL_CONTAINER_NAME=evergreen-mysql
       - REDIS_URL=redis://redis:6379/0
-      - LEDGER_CACHE_TTL_SECONDS=86400
+      - LEDGER_CACHE_TTL_SECONDS=3600
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco.evergreenpodcasts.com}
     depends_on:
       - db
       - redis
@@ -46,9 +56,39 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./secrets:/secrets:ro
     # Add these for debugging
     stdin_open: true
     tty: true
+
+  notice-scheduler:
+    build: .
+    container_name: evergreen-notice-scheduler
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=rootpassword
+      - DB_NAME=evergreen
+      - DB_PORT=3306
+      - GMAIL_SERVICE_ACCOUNT_JSON_PATH=/secrets/gmail-service-account.json
+      - GMAIL_IMPERSONATE_USER=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_EMAIL=myco@evergreenpodcasts.com
+      - GMAIL_SENDER_NAME=Myco Notices
+      - MYCO_CLIENT_URL=${MYCO_CLIENT_URL:-https://myco.evergreenpodcasts.com}
+    depends_on:
+      - db
+    networks:
+      - evergreen_net
+    restart: unless-stopped
+    volumes:
+      - ./secrets:/secrets:ro
+    # Hourly on success; retry after 60s on failure (e.g. DB still starting up)
+    command: ["sh", "-c", "while true; do if python -u scripts/notice_reminder_cron.py; then sleep 3600; else sleep 60; fi; done"]
 
 networks:
   evergreen_net:

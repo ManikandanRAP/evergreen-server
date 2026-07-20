@@ -1,0 +1,13 @@
+# Local database dumps (keep out of git and dev deployment packages)
+Dump*.sql
+local_*.sql
+
+# Secrets — never commit service account keys or env files with credentials
+.env
+.env.*
+!.env.example
+secrets/
+**/secrets/
+!secrets/.gitkeep
+evergreen-myco-*.json
+*service-account*.json

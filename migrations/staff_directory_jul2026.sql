@@ -1,0 +1,30 @@
+-- Staff Directory module
+
+CREATE TABLE IF NOT EXISTS staff_members (
+  id CHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  pronouns VARCHAR(64) NULL,
+  title VARCHAR(255) NOT NULL,
+  department ENUM('finance','sales','production','marketing','operations') NOT NULL,
+  is_supervisor BOOLEAN NOT NULL DEFAULT FALSE,
+  supervisor_id CHAR(36) NULL,
+  email VARCHAR(255) NOT NULL,
+  user_id CHAR(36) NULL,
+  google_voice_number VARCHAR(64) NULL,
+  personal_phone VARCHAR(64) NULL,
+  linkedin_url VARCHAR(2048) NULL,
+  created_by CHAR(36) NOT NULL,
+  updated_by CHAR(36) NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uq_staff_email (email),
+  UNIQUE KEY uq_staff_user_id (user_id),
+  INDEX idx_staff_department (department),
+  INDEX idx_staff_name (name),
+  INDEX idx_staff_is_supervisor (is_supervisor),
+  INDEX idx_staff_supervisor_id (supervisor_id),
+  CONSTRAINT fk_staff_supervisor FOREIGN KEY (supervisor_id) REFERENCES staff_members(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_staff_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_staff_created_by FOREIGN KEY (created_by) REFERENCES users(id),
+  CONSTRAINT fk_staff_updated_by FOREIGN KEY (updated_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

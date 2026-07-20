@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks, Form
+from fastapi import FastAPI, Depends, HTTPException, status, Response, UploadFile, File, BackgroundTasks, Form, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, ORJSONResponse, JSONResponse
 from jose import JWTError, jwt
@@ -12,6 +12,11 @@ import re
 import os
 import time
 import json
+import hashlib
+
+from services.env_loader import load_local_env
+
+load_local_env()
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -43,12 +48,15 @@ from models import (
     UserCreate,
     Split,
     SplitCreate,
-    PodcastIn,
     UserListItem,
     UserUpdate,
     UserSettingsUpdate,  # Import for user settings
     FeedbackCreate, # Import Feedback models
     Feedback,
+    FeedbackListItem,
+    FeedbackStatus,
+    FeedbackStatusUpdate,
+    FeedbackResolutionUpdate,
     BaseModel,
     UsernameCheckRequest,
     UsernameCheckResponse,
@@ -58,8 +66,7 @@ from models import (
     SHOW_TYPE_MAP,
     CADENCE_MAP,
     RANKING_CATEGORY_MAP,
-    REGION_MAP,
-    EDU_MAP,
+    AGE_DEMOGRAPHICS,
 )
 from sqlclient import SqlClient
 from auth import create_access_token, verify_password, get_password_hash
@@ -92,6 +99,109 @@ def _devlog(email: Optional[str], type_: str, message: str, details: Optional[st
 class DeveloperLogsResponse(BaseModel):
     logs: List[Dict[str, Any]]
     next_after: int
+
+
+class UserLoginActivityListResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    total: Optional[int] = None
+    total_is_estimate: bool = False
+    page_size: int
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+
+
+def _hash_ip(ip_value: Optional[str]) -> Optional[str]:
+    if not ip_value:
+        return None
+    return hashlib.sha256(ip_value.strip().encode("utf-8")).hexdigest()
+
+
+def _request_info(request: Optional[Request]) -> Dict[str, Optional[str]]:
+    if request is None:
+        return {"request_id": str(uuid.uuid4()), "session_id": None, "ip_hash": None, "user_agent": None}
+
+    request_id = request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or str(uuid.uuid4())
+    session_id = request.headers.get("x-session-id")
+    forwarded_for = request.headers.get("x-forwarded-for")
+    client_host = request.client.host if request.client else None
+    ip_raw = (forwarded_for.split(",")[0].strip() if forwarded_for else client_host)
+    user_agent = request.headers.get("user-agent")
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "ip_hash": _hash_ip(ip_raw),
+        "user_agent": user_agent,
+    }
+
+
+def _request_source(request: Optional[Request]) -> str:
+    if request is None:
+        return "unknown"
+    explicit_source = request.headers.get("x-client-source")
+    if explicit_source:
+        return explicit_source.strip().lower()
+    user_agent = (request.headers.get("user-agent") or "").lower()
+    if "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent:
+        return "mobile_web"
+    if user_agent:
+        return "web"
+    return "unknown"
+
+
+def _write_login_activity(
+    *,
+    client: SqlClient,
+    action: str,
+    status_value: str,
+    request: Optional[Request],
+    user_data: Optional[Dict[str, Any]] = None,
+    fallback_email: Optional[str] = None,
+    failure_reason: Optional[str] = None,
+    metadata_json: Optional[Dict[str, Any]] = None,
+):
+    started = time.perf_counter()
+    req = _request_info(request)
+    email = (user_data or {}).get("email") or fallback_email
+    if not email:
+        return
+
+    merged_meta: Dict[str, Any] = dict(metadata_json or {})
+    if user_data:
+        ca = user_data.get("created_at")
+        if ca is not None:
+            try:
+                if hasattr(ca, "isoformat"):
+                    merged_meta["member_since"] = ca.isoformat()
+                elif isinstance(ca, str) and ca.strip():
+                    merged_meta["member_since"] = ca.strip()
+                else:
+                    merged_meta["member_since"] = str(ca)
+            except Exception:
+                pass
+    metadata_out = merged_meta if merged_meta else None
+
+    client.create_user_login_activity(
+        event_uuid=str(uuid.uuid4()),
+        user_id=(user_data or {}).get("id"),
+        user_email=email,
+        user_name=(user_data or {}).get("name"),
+        user_role=(user_data or {}).get("role"),
+        action=action,
+        status=status_value,
+        request_id=req["request_id"],
+        session_id=req["session_id"],
+        ip_hash=req["ip_hash"],
+        user_agent=req["user_agent"],
+        failure_reason=failure_reason,
+        metadata_json=metadata_out,
+    )
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    threshold_ms = int(os.environ.get("LOGIN_ACTIVITY_SLOW_WRITE_MS", "100"))
+    if elapsed_ms >= threshold_ms:
+        print(
+            f"PERF login_activity_write_slow action={action} status={status_value} "
+            f"elapsed_ms={elapsed_ms:.2f} threshold_ms={threshold_ms}"
+        )
 from config import SECRET_KEY, ALGORITHM
 
 FastJSONResponse = ORJSONResponse if orjson is not None else JSONResponse
@@ -108,7 +218,8 @@ app = FastAPI(
 
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
-LEDGER_CACHE_TTL_SECONDS = int(os.environ.get("LEDGER_CACHE_TTL_SECONDS", "60"))
+LEDGER_CACHE_TTL_SECONDS = int(os.environ.get("LEDGER_CACHE_TTL_SECONDS", "3600"))
+LOGIN_ACTIVITY_SLOW_QUERY_MS = int(os.environ.get("LOGIN_ACTIVITY_SLOW_QUERY_MS", "300"))
 _ledger_cache_memory: Dict[str, tuple[float, Any]] = {}
 _redis_client = None
 if redis_lib and os.environ.get("REDIS_URL"):
@@ -194,15 +305,20 @@ def _ledger_cache_key(current_user: Dict[str, Any], endpoint: str) -> str:
 @app.on_event("startup")
 def ensure_startup_indexes():
     """
-    Ensure critical query indexes exist.
-    This keeps deployments self-healing after DB restores/migrations.
+    Ensure critical query indexes exist for ledger, notices, feedbacks,
+    notifications, shows, and admin pages. Self-healing after DB restores.
     """
     try:
-        SqlClient().ensure_performance_indexes()
+        client = SqlClient()
+        client.ensure_performance_indexes()
+        client.ensure_user_login_activity_schema()
+        client.ensure_inbox_schema()
+        client.ensure_myco_notice_contacts_schema()
     except Exception as e:
         # Startup should continue; API can still serve while DB/admin fixes are applied.
         print(f"WARNING: Failed to ensure performance indexes on startup: {e}")
     invalidate_ledger_cache()
+    _set_cache_refresh_meta(datetime.now(timezone.utc), LEDGER_CACHE_TTL_SECONDS)
 
 app.add_middleware(
     CORSMiddleware,
@@ -259,6 +375,26 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 def get_current_active_user(current_user: User = Depends(get_current_user)):
     return current_user
 
+def resolve_current_user_id(current_user) -> str:
+    """Resolve the DB user id from the auth dependency (dict or Pydantic model)."""
+    if isinstance(current_user, dict):
+        user_id = current_user.get("id")
+        email = current_user.get("email")
+    else:
+        user_id = getattr(current_user, "id", None)
+        email = getattr(current_user, "email", None)
+    if user_id:
+        return str(user_id)
+    if email:
+        client = SqlClient()
+        user, _ = client.get_user_by_email(email)
+        if user and user.get("id"):
+            return str(user["id"])
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not resolve user identity",
+    )
+
 def get_admin_user(current_user: User = Depends(get_current_active_user)):
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Not enough permissions")
@@ -269,21 +405,157 @@ def get_admin_or_internal_user(current_user: User = Depends(get_current_active_u
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
 
+def get_notices_manager(current_user: User = Depends(get_current_active_user)):
+    if current_user.get("role") not in ("admin", "internal_full_access"):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
+def _cancel_active_notices_for_show(show_id: str, user_id: Optional[str] = None) -> None:
+    from myco_notices_db import MycoNoticesDb
+    _, err = MycoNoticesDb().cancel_notices_for_show(show_id, user_id)
+    if err:
+        print(f"WARNING: failed to auto-cancel notices for show {show_id}: {err}")
+
+def _cancel_active_notices_for_shows(show_ids: List[str], user_id: Optional[str] = None) -> None:
+    from myco_notices_db import MycoNoticesDb
+    db = MycoNoticesDb()
+    for show_id in show_ids:
+        _, err = db.cancel_notices_for_show(show_id, user_id)
+        if err:
+            print(f"WARNING: failed to auto-cancel notices for show {show_id}: {err}")
+
 # ----------------------
 # Auth endpoints
 # ----------------------
 @app.post("/login")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     client = SqlClient()
     user, _ = client.get_user_by_email(email=form_data.username)
-    if not user or not verify_password(form_data.password, user.get("password_hash")):
+    if not user:
+        _write_login_activity(
+            client=client,
+            action="LOGIN",
+            status_value="FAILED",
+            request=request,
+            fallback_email=form_data.username,
+            failure_reason="INVALID_CREDENTIALS",
+            metadata_json={
+                "source": _request_source(request),
+                "auth_method": "password",
+                "result": "invalid_credentials",
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if not verify_password(form_data.password, user.get("password_hash")):
+        _write_login_activity(
+            client=client,
+            action="LOGIN",
+            status_value="FAILED",
+            request=request,
+            user_data=user,
+            fallback_email=user.get("email") or form_data.username,
+            failure_reason="INVALID_CREDENTIALS",
+            metadata_json={
+                "source": _request_source(request),
+                "auth_method": "password",
+                "result": "invalid_credentials",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    _write_login_activity(
+        client=client,
+        action="LOGIN",
+        status_value="SUCCESS",
+        request=request,
+        user_data=user,
+        metadata_json={
+            "source": _request_source(request),
+            "auth_method": "password",
+            "result": "success",
+        },
+    )
     access_token = create_access_token(data={"sub": user.get("email")})
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/logout")
+def logout_user(request: Request, current_user: User = Depends(get_current_active_user)):
+    client = SqlClient()
+    _write_login_activity(
+        client=client,
+        action="LOGOUT",
+        status_value="SUCCESS",
+        request=request,
+        user_data=current_user,
+        metadata_json={
+            "source": _request_source(request),
+            "logout_reason": "user_initiated",
+            "result": "success",
+        },
+    )
+    return {"message": "Logged out successfully"}
+
+
+@app.get("/admin/user-login-activity", response_model=UserLoginActivityListResponse)
+def get_user_login_activity(
+    page_size: int = 25,
+    cursor: Optional[str] = None,
+    include_total: bool = False,
+    action: Optional[str] = None,
+    status_value: Optional[str] = None,
+    user_email: Optional[str] = None,
+    from_utc: Optional[str] = None,
+    to_utc: Optional[str] = None,
+    query: Optional[str] = None,
+    admin: User = Depends(get_admin_user),
+):
+    started = time.perf_counter()
+    _ = admin
+    safe_page_size = min(max(1, page_size), 200)
+
+    if action and action not in ("LOGIN", "LOGOUT"):
+        raise HTTPException(status_code=400, detail="Invalid action filter")
+    if status_value and status_value not in ("SUCCESS", "FAILED"):
+        raise HTTPException(status_code=400, detail="Invalid status filter")
+
+    client = SqlClient()
+    items, next_cursor, has_more, total, error = client.get_user_login_activity(
+        page_size=safe_page_size,
+        cursor=cursor,
+        action=action,
+        status=status_value,
+        user_email=user_email,
+        from_utc=from_utc,
+        to_utc=to_utc,
+        query=query,
+        include_total=include_total,
+    )
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms >= LOGIN_ACTIVITY_SLOW_QUERY_MS:
+        print(
+            "PERF login_activity_read_slow "
+            f"elapsed_ms={elapsed_ms:.2f} threshold_ms={LOGIN_ACTIVITY_SLOW_QUERY_MS} "
+            f"page_size={safe_page_size} has_more={has_more} include_total={include_total}"
+        )
+    return UserLoginActivityListResponse(
+        items=items,
+        total=total,
+        total_is_estimate=False,
+        page_size=safe_page_size,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
 
 @app.get("/users/me", response_model=User)
 def read_users_me(current_user: User = Depends(get_current_active_user)):
@@ -320,8 +592,10 @@ async def check_username_availability(request: UsernameCheckRequest, current_use
 def get_user_settings(current_user: User = Depends(get_current_active_user)):
     """Get the current user's settings"""
     client = SqlClient()
-    settings, error = client.get_user_settings(current_user.get("id"))
+    settings, error = client.get_user_settings(resolve_current_user_id(current_user))
     if error:
+        if error == "User not found":
+            raise HTTPException(status_code=404, detail=error)
         raise HTTPException(status_code=500, detail=str(error))
     # Return empty dict if no settings exist yet
     return settings or {}
@@ -333,8 +607,13 @@ def update_user_settings(
 ):
     """Update the current user's settings"""
     client = SqlClient()
-    success, error = client.update_user_settings(current_user.get("id"), settings_update.settings)
+    success, error = client.update_user_settings(
+        resolve_current_user_id(current_user),
+        settings_update.settings,
+    )
     if not success:
+        if error == "User not found":
+            raise HTTPException(status_code=404, detail=error)
         raise HTTPException(status_code=500, detail=str(error))
     return {"message": "Settings updated successfully", "settings": settings_update.settings}
 
@@ -367,6 +646,21 @@ def create_user(user_data: UserCreate, admin: User = Depends(get_admin_user)):
     _, _, error = client._execute_query(sql, values, is_transaction=True)
     if error:
         raise HTTPException(status_code=500, detail="Error inserting user into DB")
+
+    # Auto-link Staff Directory when Admin/Internal account is created
+    try:
+        from staff_directory_db import StaffDirectoryDb
+        from models import STAFF_LINK_ELIGIBLE_ROLES
+
+        role_val = user_data.role.value if hasattr(user_data.role, "value") else str(user_data.role)
+        staff_db = StaffDirectoryDb(client)
+        if role_val in STAFF_LINK_ELIGIBLE_ROLES:
+            staff_db.link_staff_by_user_email(user_id, user_data.email)
+        elif role_val == "partner":
+            staff_db.clear_staff_link_for_user(user_id)
+    except Exception as link_err:
+        print(f"Staff directory auto-link on user create skipped: {link_err}")
+
     return {
         "id": user_id,
         "name": user_data.name,
@@ -445,14 +739,43 @@ def update_user(user_id: str, payload: UserUpdate, admin: User = Depends(get_adm
         update_kwargs["name"] = payload.name
     if "email" in payload.model_fields_set:
         update_kwargs["email"] = payload.email
+    if "role" in payload.model_fields_set:
+        new_role = payload.role.value if payload.role is not None else None
+        update_kwargs["role"] = new_role
+        if new_role != "partner" and "mapped_vendor_qbo_id" not in payload.model_fields_set:
+            if existing_user.get("mapped_vendor_qbo_id") is not None:
+                update_kwargs["mapped_vendor_qbo_id"] = None
     if "mapped_vendor_qbo_id" in payload.model_fields_set:
         update_kwargs["mapped_vendor_qbo_id"] = payload.mapped_vendor_qbo_id
     if payload.password:
         update_kwargs["password_hash"] = get_password_hash(payload.password)
 
+    effective_role = update_kwargs.get("role", existing_user.get("role"))
+    effective_vendor = update_kwargs.get(
+        "mapped_vendor_qbo_id",
+        existing_user.get("mapped_vendor_qbo_id"),
+    )
+    if effective_role == "partner" and not effective_vendor:
+        raise HTTPException(status_code=400, detail="Vendor is required for partner users")
+
     ok, e3 = client.update_user(user_id=user_id, **update_kwargs)
     if not ok:
         raise HTTPException(status_code=500, detail=str(e3))
+
+    # Staff Directory auto-link / unlink based on role + email
+    try:
+        from staff_directory_db import StaffDirectoryDb
+        from models import STAFF_LINK_ELIGIBLE_ROLES
+
+        staff_db = StaffDirectoryDb(client)
+        final_role = str(effective_role or "")
+        final_email = update_kwargs.get("email", existing_user.get("email"))
+        if final_role == "partner":
+            staff_db.clear_staff_link_for_user(user_id)
+        elif final_role in STAFF_LINK_ELIGIBLE_ROLES and final_email:
+            staff_db.link_staff_by_user_email(user_id, final_email)
+    except Exception as link_err:
+        print(f"Staff directory auto-link on user update skipped: {link_err}")
 
     # Re-fetch and return enriched row
     updated, e4 = client.get_user_by_id(user_id)
@@ -515,15 +838,67 @@ def create_feedback(
     # Return only the data, not the tuple
     return new_feedback
 
-@app.get("/feedbacks", response_model=List[Feedback])
-def get_all_feedbacks(admin: User = Depends(get_admin_user)):
+@app.get("/feedbacks", response_model=List[FeedbackListItem])
+def get_all_feedbacks(status: Optional[FeedbackStatus] = None, admin: User = Depends(get_admin_user)):
     client = SqlClient()
-    # Unpack the tuple returned by the client
-    feedbacks, error = client.get_all_feedbacks()
+    feedbacks, error = client.get_all_feedbacks(status.value if status else None, summary=True)
     if error:
         raise HTTPException(status_code=500, detail=str(error))
-    # Return only the data, not the tuple
     return feedbacks
+
+@app.get("/feedbacks/export", response_model=List[Feedback])
+def export_feedbacks(status: Optional[FeedbackStatus] = None, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    feedbacks, error = client.get_all_feedbacks(status.value if status else None, summary=False)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    return feedbacks
+
+@app.get("/feedbacks/{feedback_id}", response_model=Feedback)
+def get_feedback(feedback_id: str, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    feedback, error = client.get_feedback_by_id(feedback_id)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    return feedback
+
+@app.patch("/feedbacks/{feedback_id}/status", response_model=Feedback)
+def update_feedback_status(
+    feedback_id: str,
+    payload: FeedbackStatusUpdate,
+    admin: User = Depends(get_admin_user),
+):
+    client = SqlClient()
+    updated_feedback, error = client.update_feedback_status(
+        feedback_id=feedback_id,
+        status=payload.status.value,
+        admin_user_id=admin.get("id"),
+        resolution_note=payload.resolution_note,
+    )
+    if error:
+        if "not found" in str(error).lower():
+            raise HTTPException(status_code=404, detail=error)
+        raise HTTPException(status_code=500, detail=error)
+    return updated_feedback
+
+@app.patch("/feedbacks/{feedback_id}/resolution", response_model=Feedback)
+def update_feedback_resolution(
+    feedback_id: str,
+    payload: FeedbackResolutionUpdate,
+    admin: User = Depends(get_admin_user),
+):
+    client = SqlClient()
+    updated_feedback, error = client.update_feedback_resolution(
+        feedback_id=feedback_id,
+        resolution_note=payload.resolution_note,
+    )
+    if error:
+        if "not found" in str(error).lower():
+            raise HTTPException(status_code=404, detail=error)
+        raise HTTPException(status_code=500, detail=error)
+    return updated_feedback
 
 @app.delete("/feedbacks/{feedback_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_feedback(feedback_id: str, admin: User = Depends(get_admin_user)):
@@ -539,6 +914,47 @@ def delete_feedback(feedback_id: str, admin: User = Depends(get_admin_user)):
 # ----------------------
 # Shows (READ: admin+internal; WRITE: admin)
 # ----------------------
+def _load_qbo_name_maps(client: SqlClient):
+    """QBO class list from allclass: name -> id (same source as manual create dropdown)."""
+    allclass_items, ac_err = client.get_allclass_items()
+    valid_qbo_names = set()
+    qbo_name_to_id: Dict[str, int] = {}
+    if not ac_err and allclass_items:
+        for item in allclass_items:
+            name = item.get("name")
+            id_ = item.get("id")
+            if name is not None:
+                ns = name.strip()
+                valid_qbo_names.add(ns)
+                if id_ is not None:
+                    qbo_name_to_id[ns] = id_
+    return valid_qbo_names, qbo_name_to_id, ac_err
+
+
+def _resolve_qbo_payload_for_import(
+    show_data: ShowCreate,
+    valid_qbo_names: set,
+    qbo_name_to_id: Dict[str, int],
+    row_display_num: int,
+    warnings: List[str],
+) -> ShowCreate:
+    """Match CSV QBO Account Name to allclass; id always derived from name."""
+    qbo_name = (show_data.qbo_show_name or "").strip()
+    if qbo_name:
+        if qbo_name in valid_qbo_names:
+            qbo_id = qbo_name_to_id.get(qbo_name)
+            return show_data.model_copy(update={"qbo_show_name": qbo_name, "qbo_show_id": qbo_id})
+        warnings.append(
+            f"Row {row_display_num} ('{show_data.title}'): There are no matching QBO class Names to the show "
+            f"'{show_data.qbo_show_name}' specified. The show has been saved with blank QBO Name for you to update later, "
+            "by editing the show and selecting the correct QBO Account Name from the dropdown."
+        )
+        return show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
+    if show_data.qbo_show_id is not None:
+        return show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
+    return show_data
+
+
 @app.post("/podcasts", response_model=Show, status_code=status.HTTP_201_CREATED)
 def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user)):
     print('Admin object:', admin)
@@ -555,15 +971,18 @@ def create_podcast(show_data: ShowCreate, admin: User = Depends(get_admin_user))
 @app.post("/podcasts/bulk-import", status_code=status.HTTP_200_OK)
 def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get_admin_user)):
     client = SqlClient()
+    valid_qbo_names, qbo_name_to_id, _ = _load_qbo_name_maps(client)
     successful_imports = 0
     failed_imports = 0
     errors = []
+    warnings: List[str] = []
     for i, show_data in enumerate(shows_data):
         if not show_data.title or not show_data.title.strip():
             failed_imports += 1
             errors.append(f"Row {i + 2}: Show title is missing or empty and is required.")
             continue
-        new_show, error = client.create_podcast(show_data, user_name=admin.get('name'), user_id=admin.get('id'))
+        payload = _resolve_qbo_payload_for_import(show_data, valid_qbo_names, qbo_name_to_id, i + 2, warnings)
+        new_show, error = client.create_podcast(payload, user_name=admin.get('name'), user_id=admin.get('id'))
         if error:
             failed_imports += 1
             errors.append(f"Row {i + 2} ('{show_data.title}'): {str(error)}")
@@ -577,13 +996,16 @@ def bulk_create_podcasts(shows_data: List[ShowCreate], admin: User = Depends(get
     if successful_imports > 0:
         invalidate_ledger_cache()
 
-    return {
+    result: Dict[str, Any] = {
         "message": message,
         "total": len(shows_data),
         "successful": successful_imports,
         "failed": failed_imports,
         "errors": errors,
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 @app.post("/podcasts/check-duplicates")
 def check_duplicates(shows_data: List[ShowCreate], admin: User = Depends(get_admin_user)):
@@ -661,18 +1083,7 @@ def bulk_create_podcasts_with_actions(
     """Bulk import with user-specified actions for duplicates"""
     client = SqlClient()
 
-    # QBO class list from allclass: name -> id (same source as manual create dropdown)
-    allclass_items, ac_err = client.get_allclass_items()
-    valid_qbo_names = set()
-    qbo_name_to_id = {}
-    if not ac_err and allclass_items:
-        for item in allclass_items:
-            name = item.get("name")
-            id_ = item.get("id")
-            if name is not None:
-                valid_qbo_names.add(name.strip())
-                if id_ is not None:
-                    qbo_name_to_id[name.strip()] = id_
+    valid_qbo_names, qbo_name_to_id, _ = _load_qbo_name_maps(client)
 
     # Create a mapping of actions by title
     action_map = {action["title"]: action["action"] for action in actions}
@@ -696,23 +1107,8 @@ def bulk_create_podcasts_with_actions(
             skipped_imports += 1
             continue
 
-        # QBO: match CSV to allclass (same as manual create — name must exist; id comes from allclass)
-        payload = show_data
-        qbo_name = (show_data.qbo_show_name or "").strip()
-        if qbo_name:
-            if qbo_name in valid_qbo_names:
-                # Resolve id from allclass so stored (name, id) always match the table
-                qbo_id = qbo_name_to_id.get(qbo_name)
-                payload = show_data.model_copy(update={"qbo_show_name": qbo_name, "qbo_show_id": qbo_id})
-            else:
-                payload = show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
-                warnings.append(
-                    f"Row {i + 2} ('{show_data.title}'): There are no matching QBO class Names to the show '{show_data.qbo_show_name}' specified. The show has been saved with blank QBO Name for you to update later, by editing the show and select the correct QBO Name from the dropdown."
-                )
-        else:
-            # CSV left QBO blank or empty — save as empty (don't trust CSV id alone)
-            if show_data.qbo_show_id is not None:
-                payload = show_data.model_copy(update={"qbo_show_name": None, "qbo_show_id": None})
+        # QBO: match CSV to allclass (same as bulk-import / manual create)
+        payload = _resolve_qbo_payload_for_import(show_data, valid_qbo_names, qbo_name_to_id, i + 2, warnings)
 
         if action == "update":
             # Check if show exists for update
@@ -770,7 +1166,7 @@ class ShowFilterParams:
         show_type: Optional[ShowType] = None,
         has_sponsorship_revenue: Optional[bool] = None,
         has_non_evergreen_revenue: Optional[bool] = None,
-        requires_partner_access: Optional[bool] = None,
+        has_myco_ledger_access: Optional[bool] = None,
         has_branded_revenue: Optional[bool] = None,
         has_marketing_revenue: Optional[bool] = None,
         has_web_mgmt_revenue: Optional[bool] = None,
@@ -783,7 +1179,7 @@ class ShowFilterParams:
         self.show_type = show_type
         self.has_sponsorship_revenue = has_sponsorship_revenue
         self.has_non_evergreen_revenue = has_non_evergreen_revenue
-        self.requires_partner_access = requires_partner_access
+        self.has_myco_ledger_access = has_myco_ledger_access
         self.has_branded_revenue = has_branded_revenue
         self.has_marketing_revenue = has_marketing_revenue
         self.has_web_mgmt_revenue = has_web_mgmt_revenue
@@ -851,6 +1247,8 @@ def bulk_delete_podcasts(request: BulkDeleteRequest, admin: User = Depends(get_a
         raise HTTPException(status_code=400, detail="No show IDs provided")
     
     client = SqlClient()
+    for show_id in request.show_ids:
+        _cancel_active_notices_for_show(show_id, admin.get("id"))
     results = client.bulk_delete_podcasts(request.show_ids)
     invalidate_ledger_cache()
     
@@ -864,6 +1262,7 @@ def bulk_delete_podcasts(request: BulkDeleteRequest, admin: User = Depends(get_a
 
 @app.delete("/podcasts/{show_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_podcast(show_id: str, admin: User = Depends(get_admin_user)):
+    _cancel_active_notices_for_show(show_id, admin.get("id"))
     client = SqlClient()
     success, error = client.delete_podcast(show_id)
     if not success:
@@ -882,6 +1281,7 @@ def archive_podcast(show_id: str, admin: User = Depends(get_admin_user)):
     archived_show, error = client.archive_podcast(show_id, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    _cancel_active_notices_for_show(show_id, admin.get("id"))
     invalidate_ledger_cache()
     return archived_show
 
@@ -916,6 +1316,7 @@ def bulk_archive_podcasts(request: BulkArchiveRequest, admin: User = Depends(get
     result, error = client.bulk_archive_podcasts(request.show_ids, admin.get("name"), admin.get("id"))
     if error:
         raise HTTPException(status_code=400, detail=str(error))
+    _cancel_active_notices_for_shows(request.show_ids, admin.get("id"))
     invalidate_ledger_cache()
     return result
 
@@ -935,6 +1336,26 @@ def bulk_unarchive_podcasts(request: BulkArchiveRequest, admin: User = Depends(g
         raise HTTPException(status_code=400, detail=str(error))
     invalidate_ledger_cache()
     return result
+
+@app.get("/partners/me/podcasts", response_model=list[Show])
+def get_my_podcasts(current_user: User = Depends(get_current_active_user)):
+    if current_user.get("role") != "partner":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    client = SqlClient()
+    podcasts, error = client.get_podcasts_for_partner(current_user.get("id"))
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    return podcasts or []
+
+
+@app.get("/partners/{partner_id}/podcasts", response_model=list[Show])
+def get_podcasts_for_partner(partner_id: str, admin: User = Depends(get_admin_user)):
+    client = SqlClient()
+    podcasts, error = client.get_podcasts_for_partner(partner_id)
+    if error:
+        raise HTTPException(status_code=500, detail=str(error))
+    return podcasts or []
+
 
 @app.get("/vendors")
 def get_vendors(admin: User = Depends(get_admin_user)):
@@ -960,10 +1381,17 @@ def get_show_form_options(current_user: User = Depends(get_current_active_user))
         "mediaTypes": ["Video", "Audio", "Both"],
         "relationshipLevels": ["Strong", "Medium", "Weak"],
         "rankingCategories": list(RANKING_CATEGORY_MAP.values()),
-        "cadences": ["Daily", "Weekly", "Biweekly", "Monthly", "Ad hoc"],
-        "regions": list(REGION_MAP.values()),
-        "educationLevels": list(EDU_MAP.values()),
-        "ageDemographics": ["18-24", "25-34", "35-44", "45-54", "55+"],
+        "cadences": ["Daily", "Weekly", "Biweekly", "Monthly", "Ad hoc", "Seasonal", "Inactive"],
+        "subnetworks": [
+            "CONmunity",
+            "Crowd Network",
+            "Evergreen",
+            "Next Chapter",
+            "Osiris Media",
+            "Sound Talent Media",
+        ],
+        "showStatuses": ["Active", "Inactive", "No longer on network"],
+        "ageDemographics": AGE_DEMOGRAPHICS,
     }
 
 
@@ -1160,8 +1588,73 @@ class DatabaseImportJobStatusResponse(BaseModel):
     result: Optional[DatabaseImportResponse] = None
     error: Optional[str] = None
 
+class CacheRefreshResponse(BaseModel):
+    success: bool
+    message: str
+    invalidated_prefixes: List[str]
+    warmed_keys: List[str]
+    executed_at: str
+    cache_ttl_seconds: int
+    next_refresh_at: str
+
+class CacheRefreshStatusResponse(BaseModel):
+    success: bool
+    executed_at: Optional[str] = None
+    cache_ttl_seconds: int
+    next_refresh_at: Optional[str] = None
+    backend: str
+
 # In-memory import job registry (per-process).
 _import_jobs: Dict[str, Dict[str, Any]] = {}
+_cache_refresh_meta_memory: Dict[str, Any] = {}
+
+def _cache_backend_name() -> str:
+    return "redis" if _redis_client is not None else "in-memory"
+
+def _to_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8")
+    return str(value)
+
+def _set_cache_refresh_meta(executed_at: datetime, ttl_seconds: int):
+    next_refresh_at = (executed_at + timedelta(seconds=ttl_seconds)).isoformat()
+    payload = {
+        "executed_at": executed_at.isoformat(),
+        "cache_ttl_seconds": ttl_seconds,
+        "next_refresh_at": next_refresh_at,
+    }
+    _cache_refresh_meta_memory.update(payload)
+
+    if _redis_client is not None:
+        try:
+            # Keep this outside ledger:* invalidation so admins can still read status.
+            _redis_client.hset("cache_meta:ledger_refresh", mapping={
+                "executed_at": payload["executed_at"],
+                "cache_ttl_seconds": str(ttl_seconds),
+                "next_refresh_at": payload["next_refresh_at"],
+            })
+        except Exception as e:
+            print(f"WARNING: Failed to persist cache refresh metadata to Redis: {e}")
+
+def _get_cache_refresh_meta() -> Dict[str, Any]:
+    if _redis_client is not None:
+        try:
+            raw = _redis_client.hgetall("cache_meta:ledger_refresh")
+            if raw:
+                executed_at = _to_text(raw.get("executed_at") if "executed_at" in raw else raw.get(b"executed_at"))
+                ttl_raw = _to_text(raw.get("cache_ttl_seconds") if "cache_ttl_seconds" in raw else raw.get(b"cache_ttl_seconds"))
+                next_refresh_at = _to_text(raw.get("next_refresh_at") if "next_refresh_at" in raw else raw.get(b"next_refresh_at"))
+                ttl_seconds = int(ttl_raw) if ttl_raw and ttl_raw.isdigit() else LEDGER_CACHE_TTL_SECONDS
+                return {
+                    "executed_at": executed_at,
+                    "cache_ttl_seconds": ttl_seconds,
+                    "next_refresh_at": next_refresh_at,
+                }
+        except Exception as e:
+            print(f"WARNING: Failed to read cache refresh metadata from Redis: {e}")
+    return dict(_cache_refresh_meta_memory)
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
@@ -1401,6 +1894,7 @@ async def get_database_status(
                 return {
                     "database_name": database_name,
                     "total_tables": len(table_names),
+                    "total_views": 0,
                     "total_rows": 0,
                     "total_data_size_mb": 0,
                     "total_index_size_mb": 0,
@@ -1411,6 +1905,19 @@ async def get_database_status(
                 }
             except Exception as fallback_error:
                 raise HTTPException(status_code=500, detail=f"Failed to get database status: {str(error)}. Fallback also failed: {str(fallback_error)}")
+
+        views_query = """
+        SELECT COUNT(*) as total_views
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'VIEW'
+        """
+        view_count_rows, _, view_error = client._execute_query(views_query, params=(database_name,), fetch='all')
+        total_views = 0
+        if not view_error and view_count_rows:
+            try:
+                total_views = int((view_count_rows[0] or {}).get("total_views", 0) or 0)
+            except Exception:
+                total_views = 0
         
         # Calculate totals
         total_rows = sum(t.get('row_count', 0) or 0 for t in (tables or []))
@@ -1420,6 +1927,7 @@ async def get_database_status(
         return {
             "database_name": database_name,
             "total_tables": len(tables or []),
+            "total_views": total_views,
             "total_rows": total_rows,
             "total_data_size_mb": round(total_data_mb, 2),
             "total_index_size_mb": round(total_index_mb, 2),
@@ -1436,6 +1944,81 @@ async def get_database_status(
             detail=f"Failed to get database status: {str(e)}"
         )
 
+@app.post("/admin/cache/refresh", response_model=CacheRefreshResponse)
+async def refresh_ledger_cache(
+    warm: bool = True,
+    admin: User = Depends(get_admin_user),
+):
+    """
+    Manually invalidate Redis/in-memory ledger-related cache.
+    Admin only. Optionally warms admin-scoped cache keys.
+    """
+    try:
+        executed_at = datetime.now(timezone.utc)
+        invalidate_ledger_cache()
+        _set_cache_refresh_meta(executed_at, LEDGER_CACHE_TTL_SECONDS)
+        warmed_keys: List[str] = []
+
+        if warm:
+            client = SqlClient()
+
+            ledger, ledger_error = client.get_ledger()
+            if ledger_error:
+                raise HTTPException(status_code=500, detail=f"Failed to warm ledger cache: {ledger_error}")
+            ledger_key = _ledger_cache_key(admin, "ledger")
+            _cache_set(ledger_key, ledger or [])
+            warmed_keys.append(ledger_key)
+
+            payouts, payouts_error = client.get_partner_payouts()
+            if payouts_error:
+                raise HTTPException(status_code=500, detail=f"Failed to warm partner payouts cache: {payouts_error}")
+            payouts_key = _ledger_cache_key(admin, "partner_payouts")
+            _cache_set(payouts_key, payouts or [])
+            warmed_keys.append(payouts_key)
+
+        return CacheRefreshResponse(
+            success=True,
+            message="Ledger cache invalidated successfully." + (" Cache warmup completed." if warm else ""),
+            invalidated_prefixes=["ledger:*", "partner_payouts:*"],
+            warmed_keys=warmed_keys,
+            executed_at=executed_at.isoformat(),
+            cache_ttl_seconds=LEDGER_CACHE_TTL_SECONDS,
+            next_refresh_at=(executed_at + timedelta(seconds=LEDGER_CACHE_TTL_SECONDS)).isoformat(),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to refresh cache: {str(e)}"
+        )
+
+@app.get("/admin/cache/refresh/status", response_model=CacheRefreshStatusResponse)
+async def get_cache_refresh_status(
+    admin: User = Depends(get_admin_user),
+):
+    meta = _get_cache_refresh_meta()
+    ttl_seconds = int(meta.get("cache_ttl_seconds") or LEDGER_CACHE_TTL_SECONDS)
+    return CacheRefreshStatusResponse(
+        success=True,
+        executed_at=meta.get("executed_at"),
+        cache_ttl_seconds=ttl_seconds,
+        next_refresh_at=meta.get("next_refresh_at"),
+        backend=_cache_backend_name(),
+    )
+
+
+from notice_routes import register_notice_routes
+register_notice_routes(app, get_notices_manager, get_current_active_user)
+
+from twilio_webhook_routes import router as twilio_webhook_router
+app.include_router(twilio_webhook_router)
+
+from inbox_routes import register_inbox_routes
+register_inbox_routes(app, get_current_active_user, get_admin_user)
+
+from staff_directory_routes import register_staff_directory_routes
+register_staff_directory_routes(app, get_admin_or_internal_user, get_admin_user)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
